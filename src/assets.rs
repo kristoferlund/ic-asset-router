@@ -3,7 +3,7 @@ use ic_cdk::api::certified_data_set;
 use ic_http_certification::HeaderField;
 use include_dir::Dir;
 
-use crate::{mime::get_mime_type, ASSET_ROUTER};
+use crate::{mime::get_mime_type, ASSET_ROUTER, ROUTER_CONFIG};
 
 pub const IMMUTABLE_ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 pub const NO_CACHE_ASSET_CACHE_CONTROL: &str = "public, no-cache, no-store";
@@ -89,22 +89,15 @@ fn collect_assets_with_config(
     }
 }
 
-// TODO: Should be configurable
+/// Build the header list for an asset by merging the global [`ROUTER_CONFIG`]
+/// security headers and custom headers with any per-call `additional_headers`.
+///
+/// Merge order (last-write-wins for duplicate header names):
+/// 1. Security headers (from global config)
+/// 2. Custom headers (from global config)
+/// 3. `additional_headers` (per-route / per-call overrides)
 pub fn get_asset_headers(additional_headers: Vec<HeaderField>) -> Vec<HeaderField> {
-    // set up the default headers and include additional headers provided by the caller
-    let mut headers = vec![
-        ("strict-transport-security".to_string(), "max-age=31536000; includeSubDomains".to_string()),
-        ("x-frame-options".to_string(), "DENY".to_string()),
-        ("x-content-type-options".to_string(), "nosniff".to_string()),
-        // ("content-security-policy".to_string(), "default-src 'self'; img-src 'self' data:; form-action 'self'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content".to_string()),
-        ("referrer-policy".to_string(), "no-referrer".to_string()),
-        ("permissions-policy".to_string(), "accelerometer=(),ambient-light-sensor=(),autoplay=(),battery=(),camera=(),display-capture=(),document-domain=(),encrypted-media=(),fullscreen=(),gamepad=(),geolocation=(),gyroscope=(),layout-animations=(self),legacy-image-formats=(self),magnetometer=(),microphone=(),midi=(),oversized-images=(self),payment=(),picture-in-picture=(),publickey-credentials-get=(),speaker-selection=(),sync-xhr=(self),unoptimized-images=(self),unsized-media=(self),usb=(),screen-wake-lock=(),web-share=(),xr-spatial-tracking=()".to_string()),
-        ("cross-origin-embedder-policy".to_string(), "require-corp".to_string()),
-        ("cross-origin-opener-policy".to_string(), "same-origin".to_string()),
-    ];
-    headers.extend(additional_headers);
-
-    headers
+    ROUTER_CONFIG.with(|c| c.borrow().merged_headers(additional_headers))
 }
 
 pub fn delete_assets(asset_paths: Vec<&str>) {

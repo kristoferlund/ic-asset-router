@@ -13,7 +13,7 @@ macro_rules! debug_log {
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 
 use assets::{get_asset_headers, NO_CACHE_ASSET_CACHE_CONTROL};
-use ic_asset_certification::{Asset, AssetConfig, AssetRouter};
+use ic_asset_certification::{Asset, AssetConfig as IcAssetConfig, AssetRouter};
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
@@ -48,12 +48,26 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
 
 pub mod assets;
 pub mod build;
+pub mod config;
 pub mod mime;
 pub mod router;
+
+pub use config::{AssetConfig, SecurityHeaders};
 
 thread_local! {
     static HTTP_TREE: Rc<RefCell<HttpCertificationTree>> = Default::default();
     static ASSET_ROUTER: RefCell<AssetRouter<'static>> = RefCell::new(AssetRouter::with_tree(HTTP_TREE.with(|tree| tree.clone())));
+    static ROUTER_CONFIG: RefCell<AssetConfig> = RefCell::new(AssetConfig::default());
+}
+
+/// Set the global router configuration.
+///
+/// Call this during canister initialization (e.g. in `init` or `post_upgrade`)
+/// before certifying any assets.
+pub fn set_asset_config(config: AssetConfig) {
+    ROUTER_CONFIG.with(|c| {
+        *c.borrow_mut() = config;
+    });
 }
 
 pub struct HttpRequestOptions {
@@ -164,7 +178,7 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
             let content_type = extract_content_type(&response);
 
-            let asset_config = AssetConfig::File {
+            let asset_config = IcAssetConfig::File {
                 path: path.to_string(),
                 content_type: Some(content_type),
                 headers: get_asset_headers(vec![(

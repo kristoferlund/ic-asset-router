@@ -1,0 +1,376 @@
+use ic_http_certification::HeaderField;
+
+/// Typed fields for well-known security headers.
+///
+/// Based on the OWASP Secure Headers Project "active" list and Helmet.js defaults.
+/// Each field is `Option<String>` -- `None` means the header is not emitted.
+///
+/// For headers not covered by this struct, use [`AssetConfig::custom_headers`].
+///
+/// `X-XSS-Protection` is intentionally excluded: it is deprecated and its filter
+/// mechanism can be exploited. Modern guidance is to not set it at all.
+pub struct SecurityHeaders {
+    /// `Strict-Transport-Security` -- Forces HTTPS, prevents protocol downgrade (RFC 6797).
+    /// Example: `"max-age=31536000; includeSubDomains"`
+    pub hsts: Option<String>,
+
+    /// `Content-Security-Policy` -- Controls which resources the browser can load.
+    /// Primary defense against XSS. Complex to configure; `None` by default.
+    /// Example: `"default-src 'self'; script-src 'self'"`
+    pub csp: Option<String>,
+
+    /// `X-Content-Type-Options` -- Prevents MIME-type sniffing.
+    /// The only valid value is `"nosniff"`.
+    pub content_type_options: Option<String>,
+
+    /// `X-Frame-Options` -- Controls iframe embedding (legacy; superseded by CSP `frame-ancestors`).
+    /// Values: `"DENY"`, `"SAMEORIGIN"`.
+    pub frame_options: Option<String>,
+
+    /// `Referrer-Policy` -- Controls referrer information sent with requests.
+    /// Values: `"no-referrer"`, `"strict-origin-when-cross-origin"`, etc.
+    pub referrer_policy: Option<String>,
+
+    /// `Permissions-Policy` -- Controls which browser APIs are allowed (camera, geolocation, etc.).
+    /// Replaces deprecated `Feature-Policy`. Still a W3C working draft but widely supported.
+    /// Example: `"camera=(), microphone=(), geolocation=()"`
+    pub permissions_policy: Option<String>,
+
+    /// `Cross-Origin-Embedder-Policy` -- Controls loading of cross-origin resources.
+    /// Values: `"require-corp"`, `"credentialless"`, `"unsafe-none"`.
+    /// Warning: `"require-corp"` breaks Google Fonts, CDN images, analytics scripts.
+    pub coep: Option<String>,
+
+    /// `Cross-Origin-Opener-Policy` -- Process-isolates the document, prevents XS-Leaks.
+    /// Values: `"same-origin"`, `"same-origin-allow-popups"`, `"unsafe-none"`.
+    pub coop: Option<String>,
+
+    /// `Cross-Origin-Resource-Policy` -- Controls which origins can load a resource.
+    /// Mitigates Spectre side-channel attacks.
+    /// Values: `"same-origin"`, `"same-site"`, `"cross-origin"`.
+    pub corp: Option<String>,
+
+    /// `X-DNS-Prefetch-Control` -- Controls DNS prefetching, which can leak browsing intent.
+    /// Values: `"off"`, `"on"`.
+    pub dns_prefetch_control: Option<String>,
+
+    /// `X-Permitted-Cross-Domain-Policies` -- Controls cross-domain policy for Flash/PDF.
+    /// Values: `"none"`, `"master-only"`, `"by-content-type"`, `"all"`.
+    pub permitted_cross_domain_policies: Option<String>,
+}
+
+impl SecurityHeaders {
+    /// Strict preset -- mirrors the library's original hardcoded behavior plus
+    /// `Cross-Origin-Resource-Policy`, `X-DNS-Prefetch-Control`, and
+    /// `X-Permitted-Cross-Domain-Policies`.
+    ///
+    /// Suitable for apps that do not load cross-origin resources.
+    pub fn strict() -> Self {
+        Self {
+            hsts: Some("max-age=31536000; includeSubDomains".into()),
+            csp: None,
+            content_type_options: Some("nosniff".into()),
+            frame_options: Some("DENY".into()),
+            referrer_policy: Some("no-referrer".into()),
+            permissions_policy: Some(
+                "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
+                 magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()"
+                    .into(),
+            ),
+            coep: Some("require-corp".into()),
+            coop: Some("same-origin".into()),
+            corp: Some("same-origin".into()),
+            dns_prefetch_control: Some("off".into()),
+            permitted_cross_domain_policies: Some("none".into()),
+        }
+    }
+
+    /// Permissive preset -- allows cross-origin resources, iframe embedding via
+    /// `SAMEORIGIN`, and relaxed referrer policy.
+    ///
+    /// Suitable for SPAs loading external fonts, images, scripts.
+    pub fn permissive() -> Self {
+        Self {
+            hsts: Some("max-age=31536000; includeSubDomains".into()),
+            csp: None,
+            content_type_options: Some("nosniff".into()),
+            frame_options: Some("SAMEORIGIN".into()),
+            referrer_policy: Some("strict-origin-when-cross-origin".into()),
+            permissions_policy: None,
+            coep: None,
+            coop: Some("same-origin-allow-popups".into()),
+            corp: Some("cross-origin".into()),
+            dns_prefetch_control: None,
+            permitted_cross_domain_policies: Some("none".into()),
+        }
+    }
+
+    /// No security headers -- the consumer takes full responsibility.
+    pub fn none() -> Self {
+        Self {
+            hsts: None,
+            csp: None,
+            content_type_options: None,
+            frame_options: None,
+            referrer_policy: None,
+            permissions_policy: None,
+            coep: None,
+            coop: None,
+            corp: None,
+            dns_prefetch_control: None,
+            permitted_cross_domain_policies: None,
+        }
+    }
+
+    /// Convert non-`None` fields into a list of HTTP header tuples.
+    ///
+    /// Fields that are `None` are omitted entirely (the header is not emitted).
+    pub fn to_headers(&self) -> Vec<HeaderField> {
+        let mut headers = Vec::new();
+
+        if let Some(ref v) = self.hsts {
+            headers.push(("strict-transport-security".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.csp {
+            headers.push(("content-security-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.content_type_options {
+            headers.push(("x-content-type-options".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.frame_options {
+            headers.push(("x-frame-options".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.referrer_policy {
+            headers.push(("referrer-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.permissions_policy {
+            headers.push(("permissions-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.coep {
+            headers.push(("cross-origin-embedder-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.coop {
+            headers.push(("cross-origin-opener-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.corp {
+            headers.push(("cross-origin-resource-policy".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.dns_prefetch_control {
+            headers.push(("x-dns-prefetch-control".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.permitted_cross_domain_policies {
+            headers.push(("x-permitted-cross-domain-policies".to_string(), v.clone()));
+        }
+
+        headers
+    }
+}
+
+impl Default for SecurityHeaders {
+    /// Returns [`SecurityHeaders::permissive()`] to avoid breaking common use cases
+    /// (external fonts, CDN images, analytics).
+    fn default() -> Self {
+        Self::permissive()
+    }
+}
+
+/// Global configuration for the asset router.
+///
+/// Controls security headers and custom headers applied to all responses.
+pub struct AssetConfig {
+    /// Typed security headers. Use a preset ([`SecurityHeaders::strict()`],
+    /// [`SecurityHeaders::permissive()`], [`SecurityHeaders::none()`]) or
+    /// configure individual fields.
+    pub security_headers: SecurityHeaders,
+
+    /// Arbitrary headers appended after security headers.
+    ///
+    /// If a custom header has the same name as a security header, the custom
+    /// header wins (last-write-wins semantics during merging).
+    pub custom_headers: Vec<HeaderField>,
+}
+
+impl Default for AssetConfig {
+    fn default() -> Self {
+        Self {
+            security_headers: SecurityHeaders::default(),
+            custom_headers: Vec::new(),
+        }
+    }
+}
+
+impl AssetConfig {
+    /// Merge security headers and custom headers into a single list, then layer
+    /// `additional_headers` on top.
+    ///
+    /// Merge order (last-write-wins for duplicate header names):
+    /// 1. Security headers (from [`SecurityHeaders`])
+    /// 2. Custom headers (from [`AssetConfig::custom_headers`])
+    /// 3. `additional_headers` (per-route / per-call overrides)
+    ///
+    /// The comparison is case-insensitive on header names.
+    pub fn merged_headers(&self, additional_headers: Vec<HeaderField>) -> Vec<HeaderField> {
+        let mut merged: Vec<HeaderField> = Vec::new();
+
+        // Start with security headers
+        for h in self.security_headers.to_headers() {
+            merged.push(h);
+        }
+
+        // Layer custom_headers -- override any security header with the same name
+        for h in &self.custom_headers {
+            let name_lower = h.0.to_lowercase();
+            merged.retain(|(k, _)| k.to_lowercase() != name_lower);
+            merged.push(h.clone());
+        }
+
+        // Layer additional_headers (per-route overrides)
+        for h in &additional_headers {
+            let name_lower = h.0.to_lowercase();
+            merged.retain(|(k, _)| k.to_lowercase() != name_lower);
+            merged.push(h.clone());
+        }
+
+        merged
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- 1.1.15: strict() produces the expected set of headers ----
+
+    #[test]
+    fn strict_produces_expected_headers() {
+        let headers = SecurityHeaders::strict().to_headers();
+        let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+
+        assert!(names.contains(&"strict-transport-security"));
+        assert!(names.contains(&"x-content-type-options"));
+        assert!(names.contains(&"x-frame-options"));
+        assert!(names.contains(&"referrer-policy"));
+        assert!(names.contains(&"permissions-policy"));
+        assert!(names.contains(&"cross-origin-embedder-policy"));
+        assert!(names.contains(&"cross-origin-opener-policy"));
+        assert!(names.contains(&"cross-origin-resource-policy"));
+        assert!(names.contains(&"x-dns-prefetch-control"));
+        assert!(names.contains(&"x-permitted-cross-domain-policies"));
+
+        // CSP is None by default even in strict
+        assert!(!names.contains(&"content-security-policy"));
+
+        // Verify specific values
+        let find =
+            |name: &str| -> String { headers.iter().find(|(k, _)| k == name).unwrap().1.clone() };
+
+        assert_eq!(find("x-frame-options"), "DENY");
+        assert_eq!(find("referrer-policy"), "no-referrer");
+        assert_eq!(find("cross-origin-embedder-policy"), "require-corp");
+        assert_eq!(find("cross-origin-opener-policy"), "same-origin");
+        assert_eq!(find("cross-origin-resource-policy"), "same-origin");
+        assert_eq!(find("x-dns-prefetch-control"), "off");
+        assert_eq!(find("x-permitted-cross-domain-policies"), "none");
+    }
+
+    // ---- 1.1.16: permissive() produces the expected set of headers ----
+
+    #[test]
+    fn permissive_produces_expected_headers() {
+        let headers = SecurityHeaders::permissive().to_headers();
+        let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+
+        assert!(names.contains(&"strict-transport-security"));
+        assert!(names.contains(&"x-content-type-options"));
+        assert!(names.contains(&"x-frame-options"));
+        assert!(names.contains(&"referrer-policy"));
+        assert!(names.contains(&"cross-origin-opener-policy"));
+        assert!(names.contains(&"cross-origin-resource-policy"));
+        assert!(names.contains(&"x-permitted-cross-domain-policies"));
+
+        // These should NOT be set in permissive
+        assert!(!names.contains(&"permissions-policy"));
+        assert!(!names.contains(&"cross-origin-embedder-policy"));
+        assert!(!names.contains(&"content-security-policy"));
+        assert!(!names.contains(&"x-dns-prefetch-control"));
+
+        let find =
+            |name: &str| -> String { headers.iter().find(|(k, _)| k == name).unwrap().1.clone() };
+
+        assert_eq!(find("x-frame-options"), "SAMEORIGIN");
+        assert_eq!(find("referrer-policy"), "strict-origin-when-cross-origin");
+        assert_eq!(
+            find("cross-origin-opener-policy"),
+            "same-origin-allow-popups"
+        );
+        assert_eq!(find("cross-origin-resource-policy"), "cross-origin");
+    }
+
+    // ---- 1.1.17: none() produces zero headers ----
+
+    #[test]
+    fn none_produces_zero_headers() {
+        let headers = SecurityHeaders::none().to_headers();
+        assert!(headers.is_empty());
+    }
+
+    // ---- 1.1.18: custom headers override security headers of same name ----
+
+    #[test]
+    fn custom_headers_override_security_headers() {
+        let config = AssetConfig {
+            security_headers: SecurityHeaders::strict(),
+            custom_headers: vec![("x-frame-options".to_string(), "SAMEORIGIN".to_string())],
+        };
+        let merged = config.merged_headers(vec![]);
+        let frame_opts: Vec<_> = merged
+            .iter()
+            .filter(|(k, _)| k == "x-frame-options")
+            .collect();
+        assert_eq!(frame_opts.len(), 1);
+        assert_eq!(frame_opts[0].1, "SAMEORIGIN");
+    }
+
+    #[test]
+    fn additional_headers_override_custom_and_security() {
+        let config = AssetConfig {
+            security_headers: SecurityHeaders::strict(),
+            custom_headers: vec![("x-frame-options".to_string(), "SAMEORIGIN".to_string())],
+        };
+        let merged = config.merged_headers(vec![(
+            "X-Frame-Options".to_string(),
+            "ALLOW-FROM https://example.com".to_string(),
+        )]);
+        let frame_opts: Vec<_> = merged
+            .iter()
+            .filter(|(k, _)| k.to_lowercase() == "x-frame-options")
+            .collect();
+        assert_eq!(frame_opts.len(), 1);
+        assert_eq!(frame_opts[0].1, "ALLOW-FROM https://example.com");
+    }
+
+    // ---- 1.1.19: X-XSS-Protection is never set by any preset ----
+
+    #[test]
+    fn xss_protection_never_set() {
+        for headers in [
+            SecurityHeaders::strict().to_headers(),
+            SecurityHeaders::permissive().to_headers(),
+            SecurityHeaders::none().to_headers(),
+        ] {
+            assert!(
+                headers
+                    .iter()
+                    .all(|(k, _)| k.to_lowercase() != "x-xss-protection"),
+                "X-XSS-Protection should never be set by any preset"
+            );
+        }
+    }
+
+    #[test]
+    fn default_is_permissive() {
+        let default_headers = SecurityHeaders::default().to_headers();
+        let permissive_headers = SecurityHeaders::permissive().to_headers();
+        assert_eq!(default_headers, permissive_headers);
+    }
+}
