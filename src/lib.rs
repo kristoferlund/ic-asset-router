@@ -1,3 +1,15 @@
+/// Debug logging macro gated behind the `debug-logging` feature flag.
+/// When enabled, expands to `ic_cdk::println!`; otherwise compiles to nothing.
+#[cfg(feature = "debug-logging")]
+macro_rules! debug_log {
+    ($($arg:tt)*) => { ic_cdk::println!($($arg)*) };
+}
+
+#[cfg(not(feature = "debug-logging"))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
 use std::{cell::RefCell, rc::Rc};
 
 use assets::{get_asset_headers, NO_CACHE_ASSET_CACHE_CONTROL};
@@ -35,13 +47,13 @@ pub fn http_request(
     root_route_node: &RouteNode,
     opts: HttpRequestOptions,
 ) -> HttpResponse<'static> {
-    ic_cdk::println!("http_request: {:?}", req.url());
+    debug_log!("http_request: {:?}", req.url());
 
     let path = req.get_path().unwrap();
     match root_route_node.match_path(&path) {
         Some((handler, params)) => match opts.certify {
             false => {
-                ic_cdk::println!("Serving {} without certification", path);
+                debug_log!("Serving {} without certification", path);
                 let mut response = handler(req, params);
 
                 HTTP_TREE.with(|tree| {
@@ -66,10 +78,10 @@ pub fn http_request(
             }
             true => ASSET_ROUTER.with_borrow(|asset_router| {
                 if let Ok(response) = asset_router.serve_asset(&data_certificate().unwrap(), &req) {
-                    ic_cdk::println!("serving directly");
+                    debug_log!("serving directly");
                     response
                 } else {
-                    ic_cdk::println!("upgrading");
+                    debug_log!("upgrading");
 
                     HttpResponse::builder().with_upgrade(true).build()
                 }
@@ -86,7 +98,7 @@ pub fn http_request(
 /// Match incoming requests to the appropriate handler, generating assets as needed
 /// and certifying them for future requests.
 pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> HttpResponse<'static> {
-    ic_cdk::println!("http_request_update: {:?}", req.url());
+    debug_log!("http_request_update: {:?}", req.url());
 
     let path = req.get_path().unwrap();
     match root_route_node.match_path(&path) {

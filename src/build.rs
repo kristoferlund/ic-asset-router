@@ -60,9 +60,7 @@ fn process_directory(dir: &Path, prefix: String, output: &mut BTreeMap<String, S
             let handler_path = file_to_handler_path(&prefix, stem);
 
             if stem.starts_with(":") || stem == "*" {
-                mod_file.push_str(&format!(
-                    "#[path = \"./{stem}.rs\"]\npub mod {mod_name};\n"
-                ));
+                mod_file.push_str(&format!("#[path = \"./{stem}.rs\"]\npub mod {mod_name};\n"));
             } else {
                 children.push(format!("pub mod {mod_name};\n"));
             }

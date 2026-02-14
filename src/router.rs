@@ -69,14 +69,14 @@ impl RouteNode {
         let head = segments[0];
         let tail = &segments[1..];
 
-        ic_cdk::println!("head: {:?}", head);
+        debug_log!("head: {:?}", head);
 
         // Static match
         for child in &self.children {
             if let NodeType::Static(ref s) = child.node_type {
                 if s == head {
                     if let Some((h, p)) = child._match(tail) {
-                        ic_cdk::println!("Static match: {:?}", segments);
+                        debug_log!("Static match: {:?}", segments);
                         return Some((h, p));
                     }
                 }
@@ -88,7 +88,7 @@ impl RouteNode {
             if let NodeType::Param(ref name) = child.node_type {
                 if let Some((h, mut p)) = child._match(tail) {
                     p.insert(name.clone(), head.to_string());
-                    ic_cdk::println!("Param match: {:?}", segments);
+                    debug_log!("Param match: {:?}", segments);
                     return Some((h, p));
                 }
             }
@@ -98,7 +98,7 @@ impl RouteNode {
         for child in &self.children {
             if let NodeType::Wildcard = child.node_type {
                 if !segments.is_empty() {
-                    ic_cdk::println!("Wildcard match: {:?}", segments);
+                    debug_log!("Wildcard match: {:?}", segments);
                     return child.handler.map(|h| (h, HashMap::new()));
                 }
             }
