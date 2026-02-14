@@ -12,6 +12,9 @@ pub fn get_mime_type(path: &str) -> &'static str {
         // Data / APIs
         "json" => "application/json",
         "xml" => "application/xml",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "application/yaml",
+        "map" => "application/json",
 
         // JavaScript / WASM
         "js" => "application/javascript",
@@ -23,6 +26,8 @@ pub fn get_mime_type(path: &str) -> &'static str {
         "gif" => "image/gif",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
         "ico" => "image/x-icon",
 
         // Fonts
@@ -37,6 +42,9 @@ pub fn get_mime_type(path: &str) -> &'static str {
         "ogg" => "audio/ogg",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
+
+        // Web app manifests
+        "webmanifest" => "application/manifest+json",
 
         // Archives / binaries
         "pdf" => "application/pdf",

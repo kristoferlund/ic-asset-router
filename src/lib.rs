@@ -59,8 +59,7 @@ pub fn http_request(
                 HTTP_TREE.with(|tree| {
                     let tree = tree.borrow();
 
-                    // Use exact "/" to match the tree entry created during init
-                    let tree_path = HttpCertificationPath::exact("/");
+                    let tree_path = HttpCertificationPath::exact(&path);
                     let certification = HttpCertification::skip();
                     let tree_entry = HttpCertificationTreeEntry::new(&tree_path, certification);
 
@@ -68,8 +67,8 @@ pub fn http_request(
                         &data_certificate().expect("No data certificate available"),
                         &mut response,
                         &tree
-                            .witness(&tree_entry, "/")
-                            .expect("Failed to create witness for /"),
+                            .witness(&tree_entry, &path)
+                            .expect("Failed to create witness"),
                         &tree_path.to_expr_path(),
                     );
 

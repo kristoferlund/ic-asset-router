@@ -32,6 +32,9 @@ pub fn certify_all_assets(asset_dir: &Dir<'static>) {
     });
 }
 
+/// Recursively collects all files from the given directory into a flat list of [`Asset`] values.
+/// Unlike [`certify_all_assets`], this does not configure MIME types, headers, or encodings —
+/// it is useful when consumers need raw asset data for custom processing or certification logic.
 pub fn collect_assets(dir: &Dir<'_>, assets: &mut Vec<Asset<'static, 'static>>) {
     for file in dir.files() {
         assets.push(Asset::new(
