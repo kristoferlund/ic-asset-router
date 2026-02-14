@@ -5,10 +5,7 @@ use include_dir::Dir;
 
 use crate::{mime::get_mime_type, ASSET_ROUTER, ROUTER_CONFIG};
 
-pub const IMMUTABLE_ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-pub const NO_CACHE_ASSET_CACHE_CONTROL: &str = "public, no-cache, no-store";
-
-// TODO: All this should be configurable in a config file.
+// Cache-control values are now configurable via `CacheControl` in `src/config.rs`.
 pub fn certify_all_assets(asset_dir: &Dir<'static>) {
     let encodings = vec![
         AssetEncoding::Brotli.default_config(),
@@ -71,13 +68,12 @@ fn collect_assets_with_config(
             vec![]
         };
 
+        let static_cache_control =
+            ROUTER_CONFIG.with(|c| c.borrow().cache_control.static_assets.clone());
         asset_configs.push(AssetConfig::File {
             path,
             content_type: Some(mime_type.to_string()),
-            headers: get_asset_headers(vec![(
-                "cache-control".to_string(),
-                IMMUTABLE_ASSET_CACHE_CONTROL.to_string(),
-            )]),
+            headers: get_asset_headers(vec![("cache-control".to_string(), static_cache_control)]),
             fallback_for: vec![],
             aliased_by: vec![],
             encodings: use_encodings,

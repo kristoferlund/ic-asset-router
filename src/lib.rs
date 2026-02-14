@@ -12,7 +12,7 @@ macro_rules! debug_log {
 
 use std::{borrow::Cow, cell::RefCell, rc::Rc};
 
-use assets::{get_asset_headers, NO_CACHE_ASSET_CACHE_CONTROL};
+use assets::get_asset_headers;
 use ic_asset_certification::{Asset, AssetConfig as IcAssetConfig, AssetRouter};
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
@@ -52,7 +52,7 @@ pub mod config;
 pub mod mime;
 pub mod router;
 
-pub use config::{AssetConfig, SecurityHeaders};
+pub use config::{AssetConfig, CacheControl, SecurityHeaders};
 
 thread_local! {
     static HTTP_TREE: Rc<RefCell<HttpCertificationTree>> = Default::default();
@@ -178,12 +178,14 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
             let content_type = extract_content_type(&response);
 
+            let dynamic_cache_control =
+                ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
             let asset_config = IcAssetConfig::File {
                 path: path.to_string(),
                 content_type: Some(content_type),
                 headers: get_asset_headers(vec![(
                     "cache-control".to_string(),
-                    NO_CACHE_ASSET_CACHE_CONTROL.to_string(),
+                    dynamic_cache_control,
                 )]),
                 fallback_for: vec![],
                 aliased_by: vec![],
