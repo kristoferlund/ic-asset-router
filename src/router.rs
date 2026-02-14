@@ -63,7 +63,20 @@ impl RouteNode {
 
     fn _match(&self, segments: &[&str]) -> Option<(HandlerFn, RouteParams)> {
         if segments.is_empty() {
-            return self.handler.map(|h| (h, HashMap::new()));
+            if let Some(h) = self.handler {
+                return Some((h, HashMap::new()));
+            }
+            // No handler on this node — check for a wildcard child (empty wildcard match)
+            for child in &self.children {
+                if let NodeType::Wildcard = child.node_type {
+                    if let Some(h) = child.handler {
+                        let mut params = HashMap::new();
+                        params.insert("*".to_string(), String::new());
+                        return Some((h, params));
+                    }
+                }
+            }
+            return None;
         }
 
         let head = segments[0];
@@ -99,7 +112,10 @@ impl RouteNode {
             if let NodeType::Wildcard = child.node_type {
                 if !segments.is_empty() {
                     debug_log!("Wildcard match: {:?}", segments);
-                    return child.handler.map(|h| (h, HashMap::new()));
+                    let remaining = segments.join("/");
+                    let mut params = HashMap::new();
+                    params.insert("*".to_string(), remaining);
+                    return child.handler.map(|h| (h, params));
                 }
             }
         }
@@ -275,6 +291,52 @@ mod tests {
         assert_eq!(
             body_str(handler(test_request("//index2"), HashMap::new())),
             "index2"
+        );
+    }
+
+    #[test]
+    fn test_root_wildcard_captures_full_path() {
+        let root = setup_router();
+        let (_, params) = root.match_path("/a/b/c").unwrap();
+        assert_eq!(params.get("*").unwrap(), "a/b/c");
+    }
+
+    #[test]
+    fn test_folder_wildcard_captures_tail() {
+        let root = setup_router();
+        let (handler, params) = root.match_path("/folder/docs/report.pdf").unwrap();
+        assert_eq!(params.get("*").unwrap(), "docs/report.pdf");
+        assert_eq!(
+            body_str(handler(
+                test_request("/folder/docs/report.pdf"),
+                params.clone()
+            )),
+            "folder"
+        );
+    }
+
+    fn matched_user_files(_: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+        response_with_text(&format!("user_files: {params:?}"))
+    }
+
+    #[test]
+    fn test_mixed_params_and_wildcard() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/users/:id/files/*", matched_user_files);
+        let (_, params) = root.match_path("/users/42/files/docs/report.pdf").unwrap();
+        assert_eq!(params.get("id").unwrap(), "42");
+        assert_eq!(params.get("*").unwrap(), "docs/report.pdf");
+    }
+
+    #[test]
+    fn test_empty_wildcard_match() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/files/*", matched_folder);
+        let (handler, params) = root.match_path("/files/").unwrap();
+        assert_eq!(params.get("*").unwrap(), "");
+        assert_eq!(
+            body_str(handler(test_request("/files/"), params.clone())),
+            "folder"
         );
     }
 }
