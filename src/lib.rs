@@ -21,6 +21,19 @@ use ic_http_certification::{
 };
 use router::RouteNode;
 
+/// Extract the `content-type` header value from an HTTP response.
+///
+/// Performs a case-insensitive search for the `content-type` header.
+/// Returns `"application/octet-stream"` if no content-type header is present.
+fn extract_content_type(response: &HttpResponse) -> String {
+    response
+        .headers()
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
 /// Build a plain-text error response for the given HTTP status code and message.
 ///
 /// This avoids canister traps by returning a well-formed HTTP response instead
@@ -149,10 +162,11 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
             let asset = Asset::new(path.clone(), response.body().to_vec());
 
-            // TODO: handlers should be able to specify asset settings when they generate assets
+            let content_type = extract_content_type(&response);
+
             let asset_config = AssetConfig::File {
                 path: path.to_string(),
-                content_type: Some("text/html".to_string()),
+                content_type: Some(content_type),
                 headers: get_asset_headers(vec![(
                     "cache-control".to_string(),
                     NO_CACHE_ASSET_CACHE_CONTROL.to_string(),
@@ -266,5 +280,49 @@ mod tests {
             .headers()
             .iter()
             .all(|(name, _)| name.to_lowercase() != "content-type"));
+    }
+
+    // ---- 1.2: handler-controlled response metadata ----
+
+    #[test]
+    fn extract_content_type_json() {
+        let response = HttpResponse::builder()
+            .with_status_code(StatusCode::OK)
+            .with_headers(vec![(
+                "content-type".to_string(),
+                "application/json".to_string(),
+            )])
+            .with_body(b"{}" as &[u8])
+            .build();
+        assert_eq!(extract_content_type(&response), "application/json");
+    }
+
+    #[test]
+    fn extract_content_type_html() {
+        let response = HttpResponse::builder()
+            .with_status_code(StatusCode::OK)
+            .with_headers(vec![("Content-Type".to_string(), "text/html".to_string())])
+            .with_body(b"<h1>hi</h1>" as &[u8])
+            .build();
+        assert_eq!(extract_content_type(&response), "text/html");
+    }
+
+    #[test]
+    fn extract_content_type_missing_falls_back() {
+        let response = HttpResponse::builder()
+            .with_status_code(StatusCode::OK)
+            .with_body(b"raw bytes" as &[u8])
+            .build();
+        assert_eq!(extract_content_type(&response), "application/octet-stream");
+    }
+
+    #[test]
+    fn extract_content_type_case_insensitive() {
+        let response = HttpResponse::builder()
+            .with_status_code(StatusCode::OK)
+            .with_headers(vec![("CONTENT-TYPE".to_string(), "text/plain".to_string())])
+            .with_body(b"hello" as &[u8])
+            .build();
+        assert_eq!(extract_content_type(&response), "text/plain");
     }
 }
