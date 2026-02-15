@@ -2,6 +2,8 @@
 use ic_http_certification::{HttpRequest, HttpResponse, Method};
 use std::collections::HashMap;
 
+use crate::middleware::MiddlewareFn;
+
 pub type RouteParams = HashMap<String, String>;
 pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
 
@@ -27,6 +29,11 @@ pub struct RouteNode {
     pub node_type: NodeType,
     pub children: Vec<RouteNode>,
     pub handlers: HashMap<Method, HandlerFn>,
+    /// Middleware registry stored at the root node.
+    /// Each entry is a `(prefix, middleware_fn)` pair, sorted by prefix segment
+    /// count (shortest/outermost first). Only the root node's list is used at
+    /// dispatch time; child nodes ignore this field.
+    middlewares: Vec<(String, MiddlewareFn)>,
 }
 
 impl RouteNode {
@@ -35,7 +42,27 @@ impl RouteNode {
             node_type,
             children: Vec::new(),
             handlers: HashMap::new(),
+            middlewares: Vec::new(),
         }
+    }
+
+    /// Register a middleware at the given prefix.
+    ///
+    /// One middleware per prefix — calling this again with the same prefix
+    /// replaces the previous middleware. The list is kept sorted by prefix
+    /// segment count (shortest/outermost first) so that the middleware chain
+    /// executes in root → outer → inner order.
+    ///
+    /// Use `"/"` for root-level middleware that runs on every request.
+    pub fn set_middleware(&mut self, prefix: &str, mw: MiddlewareFn) {
+        let normalized = normalize_prefix(prefix);
+        if let Some(entry) = self.middlewares.iter_mut().find(|(p, _)| *p == normalized) {
+            entry.1 = mw;
+        } else {
+            self.middlewares.push((normalized, mw));
+        }
+        // Sort by segment count (shortest first) for correct outer → inner ordering.
+        self.middlewares.sort_by_key(|(p, _)| segment_count(p));
     }
 
     pub fn insert(&mut self, path: &str, method: Method, handler: HandlerFn) {
@@ -65,6 +92,37 @@ impl RouteNode {
                 self.children.push(new_node);
             }
         }
+    }
+
+    /// Execute the middleware chain for a resolved route.
+    ///
+    /// Collects all middleware whose prefix matches `path` (sorted outermost
+    /// first), wraps `handler` as the innermost `next`, and executes the chain.
+    /// Each middleware's `next` calls the next middleware inward, with the
+    /// handler at the center.
+    pub fn execute_with_middleware(
+        &self,
+        path: &str,
+        handler: HandlerFn,
+        req: HttpRequest,
+        params: RouteParams,
+    ) -> HttpResponse<'static> {
+        let matching: Vec<MiddlewareFn> = self
+            .middlewares
+            .iter()
+            .filter(|(prefix, _)| path_matches_prefix(path, prefix))
+            .map(|(_, mw)| *mw)
+            .collect();
+
+        if matching.is_empty() {
+            return handler(req, params);
+        }
+
+        // Build the chain from innermost to outermost.
+        // Start with the handler as the innermost function.
+        // Then wrap each middleware around it, from the last (innermost) to the
+        // first (outermost).
+        build_chain(&matching, handler, req, &params)
     }
 
     /// Resolve a path and method to a `RouteResult`.
@@ -157,6 +215,57 @@ impl RouteNode {
 
         None
     }
+}
+
+/// Check whether a request path matches a middleware prefix.
+///
+/// `"/"` matches all paths. Otherwise, the path must start with the prefix
+/// followed by either end-of-string or a `"/"` separator.
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return true;
+    }
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+/// Build and execute a nested middleware chain.
+///
+/// `middlewares` is sorted outermost-first. The handler is the innermost
+/// function. We recurse: middleware[0] wraps a `next` that calls
+/// `build_chain(middlewares[1..], handler, ...)`.
+fn build_chain(
+    middlewares: &[MiddlewareFn],
+    handler: HandlerFn,
+    req: HttpRequest,
+    params: &RouteParams,
+) -> HttpResponse<'static> {
+    match middlewares.split_first() {
+        None => handler(req, params.clone()),
+        Some((&mw, rest)) => {
+            let next =
+                |inner_req: HttpRequest, inner_params: &RouteParams| -> HttpResponse<'static> {
+                    build_chain(rest, handler, inner_req, inner_params)
+                };
+            mw(req, params, &next)
+        }
+    }
+}
+
+/// Normalize a middleware prefix to a canonical form: `"/"` for root, otherwise
+/// `"/segment1/segment2"` with no trailing slash.
+fn normalize_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+/// Count the number of non-empty path segments in a normalized prefix.
+/// `"/"` has 0 segments; `"/api"` has 1; `"/api/v2"` has 2.
+fn segment_count(prefix: &str) -> usize {
+    prefix.split('/').filter(|s| !s.is_empty()).count()
 }
 
 #[cfg(test)]
@@ -497,6 +606,292 @@ mod tests {
                     route_result_name(&other)
                 ),
             }
+        }
+    }
+
+    // ---- 2.2 Middleware tests ----
+
+    use std::cell::RefCell;
+
+    thread_local! {
+        static LOG: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    }
+
+    fn clear_log() {
+        LOG.with(|l| l.borrow_mut().clear());
+    }
+
+    fn get_log() -> Vec<String> {
+        LOG.with(|l| l.borrow().clone())
+    }
+
+    fn log_entry(msg: &str) {
+        LOG.with(|l| l.borrow_mut().push(msg.to_string()));
+    }
+
+    fn logging_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+        log_entry("handler");
+        response_with_text("handler_response")
+    }
+
+    fn root_middleware(
+        req: HttpRequest,
+        params: &RouteParams,
+        next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+    ) -> HttpResponse<'static> {
+        log_entry("root_mw_before");
+        let resp = next(req, params);
+        log_entry("root_mw_after");
+        resp
+    }
+
+    fn api_middleware(
+        req: HttpRequest,
+        params: &RouteParams,
+        next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+    ) -> HttpResponse<'static> {
+        log_entry("api_mw_before");
+        let resp = next(req, params);
+        log_entry("api_mw_after");
+        resp
+    }
+
+    fn api_v2_middleware(
+        req: HttpRequest,
+        params: &RouteParams,
+        next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+    ) -> HttpResponse<'static> {
+        log_entry("api_v2_mw_before");
+        let resp = next(req, params);
+        log_entry("api_v2_mw_after");
+        resp
+    }
+
+    /// 2.2.6a: Root middleware runs on all requests
+    #[test]
+    fn test_root_middleware_runs_on_all_requests() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/", Method::GET, logging_handler);
+        root.insert("/about", Method::GET, logging_handler);
+        root.insert("/api/users", Method::GET, logging_handler);
+        root.set_middleware("/", root_middleware);
+
+        // Root path
+        let (handler, params) = resolve_get(&root, "/");
+        root.execute_with_middleware("/", handler, test_request("/"), params);
+        assert!(get_log().contains(&"root_mw_before".to_string()));
+        assert!(get_log().contains(&"handler".to_string()));
+        assert!(get_log().contains(&"root_mw_after".to_string()));
+
+        // /about
+        clear_log();
+        let (handler, params) = resolve_get(&root, "/about");
+        root.execute_with_middleware("/about", handler, test_request("/about"), params);
+        assert!(get_log().contains(&"root_mw_before".to_string()));
+        assert!(get_log().contains(&"handler".to_string()));
+
+        // /api/users
+        clear_log();
+        let (handler, params) = resolve_get(&root, "/api/users");
+        root.execute_with_middleware("/api/users", handler, test_request("/api/users"), params);
+        assert!(get_log().contains(&"root_mw_before".to_string()));
+        assert!(get_log().contains(&"handler".to_string()));
+    }
+
+    /// 2.2.6b: Scoped middleware runs only on matching prefix
+    #[test]
+    fn test_scoped_middleware_only_matching_prefix() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/users", Method::GET, logging_handler);
+        root.insert("/pages/home", Method::GET, logging_handler);
+        root.set_middleware("/api", api_middleware);
+
+        // /api/users — api_middleware should run
+        let (handler, params) = resolve_get(&root, "/api/users");
+        root.execute_with_middleware("/api/users", handler, test_request("/api/users"), params);
+        assert!(get_log().contains(&"api_mw_before".to_string()));
+        assert!(get_log().contains(&"handler".to_string()));
+
+        // /pages/home — api_middleware should NOT run
+        clear_log();
+        let (handler, params) = resolve_get(&root, "/pages/home");
+        root.execute_with_middleware("/pages/home", handler, test_request("/pages/home"), params);
+        assert!(!get_log().contains(&"api_mw_before".to_string()));
+        assert!(get_log().contains(&"handler".to_string()));
+    }
+
+    /// 2.2.6c: Chain order is root → outer → inner → handler → inner → outer → root
+    #[test]
+    fn test_middleware_chain_order() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/v2/data", Method::GET, logging_handler);
+        root.set_middleware("/", root_middleware);
+        root.set_middleware("/api", api_middleware);
+        root.set_middleware("/api/v2", api_v2_middleware);
+
+        let (handler, params) = resolve_get(&root, "/api/v2/data");
+        root.execute_with_middleware(
+            "/api/v2/data",
+            handler,
+            test_request("/api/v2/data"),
+            params,
+        );
+
+        let log = get_log();
+        assert_eq!(
+            log,
+            vec![
+                "root_mw_before",
+                "api_mw_before",
+                "api_v2_mw_before",
+                "handler",
+                "api_v2_mw_after",
+                "api_mw_after",
+                "root_mw_after",
+            ]
+        );
+    }
+
+    /// 2.2.6d: Middleware can short-circuit (return without calling next)
+    #[test]
+    fn test_middleware_short_circuit() {
+        fn auth_middleware(
+            _req: HttpRequest,
+            _params: &RouteParams,
+            _next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+        ) -> HttpResponse<'static> {
+            log_entry("auth_reject");
+            HttpResponse::builder()
+                .with_status_code(StatusCode::UNAUTHORIZED)
+                .with_body(Cow::Owned(b"Unauthorized".to_vec()))
+                .build()
+        }
+
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/secret", Method::GET, logging_handler);
+        root.set_middleware("/", auth_middleware);
+
+        let (handler, params) = resolve_get(&root, "/secret");
+        let resp =
+            root.execute_with_middleware("/secret", handler, test_request("/secret"), params);
+
+        assert_eq!(resp.status_code(), StatusCode::UNAUTHORIZED);
+        let log = get_log();
+        assert!(log.contains(&"auth_reject".to_string()));
+        assert!(!log.contains(&"handler".to_string()));
+    }
+
+    /// 2.2.6e: Middleware can modify the response from next
+    #[test]
+    fn test_middleware_modifies_response() {
+        fn header_middleware(
+            req: HttpRequest,
+            params: &RouteParams,
+            next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+        ) -> HttpResponse<'static> {
+            let resp = next(req, params);
+            // Build a new response with an added header.
+            let mut headers = resp.headers().to_vec();
+            headers.push(("x-custom".to_string(), "injected".to_string()));
+            HttpResponse::builder()
+                .with_status_code(resp.status_code())
+                .with_headers(headers)
+                .with_body(resp.body().to_vec())
+                .build()
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/test", Method::GET, logging_handler);
+        root.set_middleware("/", header_middleware);
+
+        let (handler, params) = resolve_get(&root, "/test");
+        let resp = root.execute_with_middleware("/test", handler, test_request("/test"), params);
+
+        let custom_header = resp
+            .headers()
+            .iter()
+            .find(|(k, _)| k == "x-custom")
+            .map(|(_, v)| v.clone());
+        assert_eq!(custom_header, Some("injected".to_string()));
+        assert_eq!(body_str(resp), "handler_response");
+    }
+
+    /// 2.2.6f: set_middleware on same prefix replaces previous middleware
+    #[test]
+    fn test_set_middleware_replaces_previous() {
+        fn mw_a(
+            req: HttpRequest,
+            params: &RouteParams,
+            next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+        ) -> HttpResponse<'static> {
+            log_entry("mw_a");
+            next(req, params)
+        }
+        fn mw_b(
+            req: HttpRequest,
+            params: &RouteParams,
+            next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+        ) -> HttpResponse<'static> {
+            log_entry("mw_b");
+            next(req, params)
+        }
+
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/test", Method::GET, logging_handler);
+        root.set_middleware("/", mw_a);
+        root.set_middleware("/", mw_b); // should replace mw_a
+
+        let (handler, params) = resolve_get(&root, "/test");
+        root.execute_with_middleware("/test", handler, test_request("/test"), params);
+
+        let log = get_log();
+        assert!(!log.contains(&"mw_a".to_string()));
+        assert!(log.contains(&"mw_b".to_string()));
+    }
+
+    /// 2.2.6g: Middleware works in both query and update paths.
+    /// This tests that execute_with_middleware works correctly (same function
+    /// is used by both http_request and http_request_update).
+    #[test]
+    fn test_middleware_works_in_both_paths() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+
+        fn post_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            log_entry("post_handler");
+            response_with_text("posted")
+        }
+
+        root.insert("/api/data", Method::GET, logging_handler);
+        root.insert("/api/data", Method::POST, post_handler);
+        root.set_middleware("/api", api_middleware);
+
+        // Simulate query path (GET)
+        let (handler, params) = resolve_get(&root, "/api/data");
+        let resp =
+            root.execute_with_middleware("/api/data", handler, test_request("/api/data"), params);
+        assert_eq!(body_str(resp), "handler_response");
+        assert!(get_log().contains(&"api_mw_before".to_string()));
+
+        // Simulate update path (POST)
+        clear_log();
+        match root.resolve("/api/data", &Method::POST) {
+            RouteResult::Found(handler, params) => {
+                let req = HttpRequest::builder()
+                    .with_method(Method::POST)
+                    .with_url("/api/data")
+                    .build();
+                let resp = root.execute_with_middleware("/api/data", handler, req, params);
+                assert_eq!(body_str(resp), "posted");
+                assert!(get_log().contains(&"api_mw_before".to_string()));
+                assert!(get_log().contains(&"post_handler".to_string()));
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
         }
     }
 }

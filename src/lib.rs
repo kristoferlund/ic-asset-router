@@ -68,6 +68,7 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
 pub mod assets;
 pub mod build;
 pub mod config;
+pub mod middleware;
 pub mod mime;
 pub mod router;
 
@@ -128,7 +129,8 @@ pub fn http_request(
         RouteResult::Found(handler, params) => match opts.certify {
             false => {
                 debug_log!("Serving {} without certification", path);
-                let mut response = handler(req, params);
+                let mut response =
+                    root_route_node.execute_with_middleware(&path, handler, req, params);
 
                 HTTP_TREE.with(|tree| {
                     let tree = tree.borrow();
@@ -208,7 +210,7 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
     match root_route_node.resolve(&path, &method) {
         RouteResult::Found(handler, params) => {
-            let response = handler(req, params);
+            let response = root_route_node.execute_with_middleware(&path, handler, req, params);
 
             let asset = Asset::new(path.clone(), response.body().to_vec());
 

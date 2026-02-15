@@ -23,6 +23,14 @@ struct MethodExport {
     method_variant: String,
 }
 
+/// A detected middleware file in a route directory.
+struct MiddlewareExport {
+    /// The middleware prefix (e.g. "/" for root, "/api" for api directory)
+    prefix: String,
+    /// The Rust module path to the middleware function (e.g. "routes::middleware::middleware")
+    handler_path: String,
+}
+
 /// Generates a route tree from the routes directory and writes it to a file. Also ensures that
 /// mod.rs files are created in each directory.
 pub fn generate_routes() {
@@ -30,7 +38,13 @@ pub fn generate_routes() {
     let generated_file = Path::new("src/__route_tree.rs");
 
     let mut exports: Vec<MethodExport> = Vec::new();
-    process_directory(routes_dir, String::new(), &mut exports);
+    let mut middleware_exports: Vec<MiddlewareExport> = Vec::new();
+    process_directory(
+        routes_dir,
+        String::new(),
+        &mut exports,
+        &mut middleware_exports,
+    );
 
     // Sort by route path for deterministic output
     exports.sort_by(|a, b| {
@@ -38,6 +52,9 @@ pub fn generate_routes() {
             .cmp(&b.route_path)
             .then(a.method_variant.cmp(&b.method_variant))
     });
+
+    // Sort middleware by prefix for deterministic output
+    middleware_exports.sort_by(|a, b| a.prefix.cmp(&b.prefix));
 
     let mut output = String::new();
     output.push_str("use crate::routes;\n");
@@ -54,13 +71,25 @@ pub fn generate_routes() {
         ));
     }
 
+    for mw in &middleware_exports {
+        output.push_str(&format!(
+            "        root.set_middleware(\"{}\", {});\n",
+            mw.prefix, mw.handler_path,
+        ));
+    }
+
     output.push_str("        root\n    };\n}\n");
 
     let mut file = File::create(generated_file).unwrap();
     file.write_all(output.as_bytes()).unwrap();
 }
 
-fn process_directory(dir: &Path, prefix: String, exports: &mut Vec<MethodExport>) {
+fn process_directory(
+    dir: &Path,
+    prefix: String,
+    exports: &mut Vec<MethodExport>,
+    middleware_exports: &mut Vec<MiddlewareExport>,
+) {
     let mut mod_file = String::new();
     let mut children = vec![];
 
@@ -76,11 +105,36 @@ fn process_directory(dir: &Path, prefix: String, exports: &mut Vec<MethodExport>
                 format!("{prefix}/{name}")
             };
             fs::create_dir_all(&path).unwrap();
-            process_directory(&path, next_prefix, exports);
+            process_directory(&path, next_prefix, exports, middleware_exports);
             children.push(format!("pub mod {};\n", sanitize_mod(name)));
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let stem = path.file_stem().unwrap().to_str().unwrap();
             if stem == "mod" {
+                continue;
+            }
+
+            // Detect middleware.rs — these are not route files.
+            if stem == "middleware" {
+                children.push("pub mod middleware;\n".to_string());
+                let mw_prefix = if prefix.is_empty() {
+                    "/".to_string()
+                } else {
+                    prefix.clone()
+                };
+                let mw_handler_path = if prefix.is_empty() {
+                    "routes::middleware::middleware".to_string()
+                } else {
+                    let parts: Vec<String> = prefix
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| sanitize_mod(s))
+                        .collect();
+                    format!("routes::{}::middleware::middleware", parts.join("::"))
+                };
+                middleware_exports.push(MiddlewareExport {
+                    prefix: mw_prefix,
+                    handler_path: mw_handler_path,
+                });
                 continue;
             }
 
