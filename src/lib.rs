@@ -17,9 +17,10 @@ use ic_asset_certification::{Asset, AssetConfig as IcAssetConfig, AssetRouter};
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
-    HttpCertificationTree, HttpCertificationTreeEntry, HttpRequest, HttpResponse, StatusCode,
+    HttpCertificationTree, HttpCertificationTreeEntry, HttpRequest, HttpResponse, Method,
+    StatusCode,
 };
-use router::RouteNode;
+use router::{RouteNode, RouteResult};
 
 /// Extract the `content-type` header value from an HTTP response.
 ///
@@ -32,6 +33,24 @@ fn extract_content_type(response: &HttpResponse) -> String {
         .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
+/// Build a 405 Method Not Allowed response with an `Allow` header listing the
+/// permitted methods for the requested path.
+fn method_not_allowed(allowed: &[Method]) -> HttpResponse<'static> {
+    let allow = allowed
+        .iter()
+        .map(|m| m.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    HttpResponse::builder()
+        .with_status_code(StatusCode::METHOD_NOT_ALLOWED)
+        .with_headers(vec![
+            ("allow".to_string(), allow),
+            ("content-type".to_string(), "text/plain".to_string()),
+        ])
+        .with_body(Cow::<[u8]>::Owned(b"Method Not Allowed".to_vec()))
+        .build()
 }
 
 /// Build a plain-text error response for the given HTTP status code and message.
@@ -92,8 +111,21 @@ pub fn http_request(
         Ok(p) => p,
         Err(_) => return error_response(400, "Bad Request: malformed URL"),
     };
-    match root_route_node.match_path(&path) {
-        Some((handler, params)) => match opts.certify {
+
+    let method = req.method().clone();
+
+    // Non-GET requests arriving at the query endpoint must be upgraded to an
+    // update call so that state-mutating handlers execute in the update path.
+    if method != Method::GET && method != Method::HEAD {
+        debug_log!(
+            "upgrading non-GET request ({}) to update call",
+            method.as_str()
+        );
+        return HttpResponse::builder().with_upgrade(true).build();
+    }
+
+    match root_route_node.resolve(&path, &method) {
+        RouteResult::Found(handler, params) => match opts.certify {
             false => {
                 debug_log!("Serving {} without certification", path);
                 let mut response = handler(req, params);
@@ -153,7 +185,8 @@ pub fn http_request(
                 }
             }),
         },
-        None => HttpResponse::not_found(
+        RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
+        RouteResult::NotFound => HttpResponse::not_found(
             b"Not Found",
             vec![("Content-Type".into(), "text/plain".into())],
         )
@@ -170,8 +203,11 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
         Ok(p) => p,
         Err(_) => return error_response(400, "Bad Request: malformed URL"),
     };
-    match root_route_node.match_path(&path) {
-        Some((handler, params)) => {
+
+    let method = req.method().clone();
+
+    match root_route_node.resolve(&path, &method) {
+        RouteResult::Found(handler, params) => {
             let response = handler(req, params);
 
             let asset = Asset::new(path.clone(), response.body().to_vec());
@@ -201,7 +237,8 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
             response
         }
-        None => HttpResponse::not_found(
+        RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
+        RouteResult::NotFound => HttpResponse::not_found(
             b"Not Found",
             vec![("Content-Type".into(), "text/plain".into())],
         )
@@ -224,8 +261,8 @@ mod tests {
 
     fn setup_router() -> RouteNode {
         let mut root = RouteNode::new(NodeType::Static("".into()));
-        root.insert("/", noop_handler);
-        root.insert("/*", noop_handler);
+        root.insert("/", Method::GET, noop_handler);
+        root.insert("/*", Method::GET, noop_handler);
         root
     }
 
@@ -280,22 +317,26 @@ mod tests {
         // that are unavailable in unit tests, so we test the handler directly
         // and verify the router dispatch path up to the handler call.
         let mut root = RouteNode::new(NodeType::Static("".into()));
-        root.insert("/no-ct", handler_no_content_type);
+        root.insert("/no-ct", Method::GET, handler_no_content_type);
 
         // Verify the route matches and the handler runs without panic.
         let req = HttpRequest::builder()
             .with_method(Method::GET)
             .with_url("/no-ct")
             .build();
-        let (handler, params) = root.match_path("/no-ct").unwrap();
-        let response = handler(req, params);
-        assert_eq!(response.status_code(), StatusCode::OK);
-        assert_eq!(response.body(), b"no content-type");
-        // No content-type header present — and no panic occurred.
-        assert!(response
-            .headers()
-            .iter()
-            .all(|(name, _)| name.to_lowercase() != "content-type"));
+        match root.resolve("/no-ct", &Method::GET) {
+            RouteResult::Found(handler, params) => {
+                let response = handler(req, params);
+                assert_eq!(response.status_code(), StatusCode::OK);
+                assert_eq!(response.body(), b"no content-type");
+                // No content-type header present — and no panic occurred.
+                assert!(response
+                    .headers()
+                    .iter()
+                    .all(|(name, _): &(String, String)| name.to_lowercase() != "content-type"));
+            }
+            _ => panic!("expected Found for GET /no-ct"),
+        }
     }
 
     // ---- 1.2: handler-controlled response metadata ----
