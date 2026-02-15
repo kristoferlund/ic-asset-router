@@ -189,6 +189,18 @@ pub fn http_request(
         },
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
+            // Try serving a certified static asset before returning 404.
+            if opts.certify {
+                let maybe_asset = ASSET_ROUTER.with_borrow(|asset_router| {
+                    let cert = data_certificate()?;
+                    asset_router.serve_asset(&cert, &req).ok()
+                });
+                if let Some(response) = maybe_asset {
+                    debug_log!("serving static asset for {}", path);
+                    return response;
+                }
+            }
+
             if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
                 response
             } else {

@@ -8,6 +8,7 @@ thread_local! {
         root.insert("", Method::GET, routes::index::get);
         root.insert("/posts/:postId/", Method::GET, routes::posts::postId::index::get);
         root.insert("/posts/:postId/comments", Method::GET, routes::posts::postId::comments::get);
+        root.insert("/posts/:postId/comments", Method::POST, routes::posts::postId::comments::post);
         root
     };
 }

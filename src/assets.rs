@@ -34,10 +34,13 @@ pub fn certify_all_assets(asset_dir: &Dir<'static>) {
 /// it is useful when consumers need raw asset data for custom processing or certification logic.
 pub fn collect_assets(dir: &Dir<'_>, assets: &mut Vec<Asset<'static, 'static>>) {
     for file in dir.files() {
-        assets.push(Asset::new(
-            file.path().to_string_lossy().to_string(),
-            file.contents().to_vec(),
-        ));
+        let raw_path = file.path().to_string_lossy().to_string();
+        let path = if raw_path.starts_with('/') {
+            raw_path
+        } else {
+            format!("/{raw_path}")
+        };
+        assets.push(Asset::new(path, file.contents().to_vec()));
     }
 
     for subdir in dir.dirs() {
@@ -52,7 +55,14 @@ fn collect_assets_with_config(
     encodings: Vec<(AssetEncoding, String)>,
 ) {
     for file in dir.files() {
-        let path = file.path().to_string_lossy().to_string();
+        let raw_path = file.path().to_string_lossy().to_string();
+        // include_dir stores relative paths (e.g. "style.css") but HTTP
+        // requests use absolute paths ("/style.css"). Ensure a leading slash.
+        let path = if raw_path.starts_with('/') {
+            raw_path
+        } else {
+            format!("/{raw_path}")
+        };
 
         assets.push(Asset::new(path.clone(), file.contents().to_vec()));
 

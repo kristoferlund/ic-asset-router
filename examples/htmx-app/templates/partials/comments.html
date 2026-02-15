@@ -8,3 +8,11 @@
 </div>
 {% endfor %}
 {% endif %}
+
+<form hx-post="/posts/{{ post_id }}/comments"
+      hx-target="#comments"
+      hx-swap="innerHTML">
+    <input type="text" name="author" placeholder="Name (optional)">
+    <textarea name="body" placeholder="Write a comment…" required></textarea>
+    <button type="submit">Post Comment</button>
+</form>

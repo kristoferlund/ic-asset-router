@@ -114,6 +114,43 @@ a {
   margin-top: 0.25rem;
 }
 
+/* Comment form */
+.comments-section form {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.comments-section form input,
+.comments-section form textarea {
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.comments-section form textarea {
+  min-height: 4rem;
+  resize: vertical;
+}
+
+.comments-section form button {
+  align-self: flex-start;
+  padding: 0.4rem 1rem;
+  font-size: 0.9rem;
+  background: #0066cc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.comments-section form button:hover {
+  background: #0052a3;
+}
+
 .htmx-indicator {
   display: none;
 }

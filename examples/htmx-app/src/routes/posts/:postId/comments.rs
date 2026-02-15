@@ -9,15 +9,51 @@ use crate::data::{self, Comment};
 /// HTML fragment — no layout wrapper. Returned as an HTMX partial response.
 #[derive(Template)]
 #[template(path = "partials/comments.html")]
-struct CommentsTemplate<'a> {
-    comments: &'a [Comment],
+struct CommentsTemplate {
+    comments: Vec<Comment>,
+    post_id: String,
 }
 
 pub fn get(_req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
     let post_id = params.get("postId").map(|s| s.as_str()).unwrap_or("0");
     let comments = data::comments_for_post(post_id);
-    let template = CommentsTemplate { comments };
+    let template = CommentsTemplate {
+        comments,
+        post_id: post_id.to_string(),
+    };
 
+    render_template(&template)
+}
+
+pub fn post(req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+    let post_id = params
+        .get("postId")
+        .map(|s| s.as_str())
+        .unwrap_or("0")
+        .to_string();
+
+    let body_str = std::str::from_utf8(req.body()).unwrap_or("");
+    let fields = parse_form_urlencoded(body_str);
+
+    let author = fields
+        .get("author")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "Anonymous".to_string());
+    let body = fields.get("body").cloned().unwrap_or_default();
+
+    if body.is_empty() {
+        let comments = data::comments_for_post(&post_id);
+        let template = CommentsTemplate { comments, post_id };
+        return render_template(&template);
+    }
+
+    let comments = data::add_comment(&post_id, author, body);
+    let template = CommentsTemplate { comments, post_id };
+    render_template(&template)
+}
+
+fn render_template(template: &CommentsTemplate) -> HttpResponse<'static> {
     match template.render() {
         Ok(html) => HttpResponse::builder()
             .with_status_code(StatusCode::OK)
@@ -33,4 +69,38 @@ pub fn get(_req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
             .with_body(Cow::<[u8]>::Owned(b"Template rendering failed".to_vec()))
             .build(),
     }
+}
+
+fn parse_form_urlencoded(input: &str) -> std::collections::HashMap<String, String> {
+    input
+        .split('&')
+        .filter(|s| !s.is_empty())
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?;
+            let value = parts.next().unwrap_or("");
+            Some((url_decode(key), url_decode(value)))
+        })
+        .collect()
+}
+
+fn url_decode(s: &str) -> String {
+    let s = s.replace('+', " ");
+    let mut result = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(result).unwrap_or_default()
 }
