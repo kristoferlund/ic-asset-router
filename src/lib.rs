@@ -188,11 +188,17 @@ pub fn http_request(
             }),
         },
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
-        RouteResult::NotFound => HttpResponse::not_found(
-            b"Not Found",
-            vec![("Content-Type".into(), "text/plain".into())],
-        )
-        .build(),
+        RouteResult::NotFound => {
+            if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
+                response
+            } else {
+                HttpResponse::not_found(
+                    b"Not Found",
+                    vec![("Content-Type".into(), "text/plain".into())],
+                )
+                .build()
+            }
+        }
     }
 }
 
@@ -240,11 +246,17 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
             response
         }
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
-        RouteResult::NotFound => HttpResponse::not_found(
-            b"Not Found",
-            vec![("Content-Type".into(), "text/plain".into())],
-        )
-        .build(),
+        RouteResult::NotFound => {
+            if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
+                response
+            } else {
+                HttpResponse::not_found(
+                    b"Not Found",
+                    vec![("Content-Type".into(), "text/plain".into())],
+                )
+                .build()
+            }
+        }
     }
 }
 

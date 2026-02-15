@@ -34,6 +34,10 @@ pub struct RouteNode {
     /// count (shortest/outermost first). Only the root node's list is used at
     /// dispatch time; child nodes ignore this field.
     middlewares: Vec<(String, MiddlewareFn)>,
+    /// Optional custom not-found handler. When set, this handler is called
+    /// instead of the default 404 response when no route matches the request
+    /// path. Only the root node's value is used at dispatch time.
+    not_found_handler: Option<HandlerFn>,
 }
 
 impl RouteNode {
@@ -43,6 +47,7 @@ impl RouteNode {
             children: Vec::new(),
             handlers: HashMap::new(),
             middlewares: Vec::new(),
+            not_found_handler: None,
         }
     }
 
@@ -63,6 +68,23 @@ impl RouteNode {
         }
         // Sort by segment count (shortest first) for correct outer → inner ordering.
         self.middlewares.sort_by_key(|(p, _)| segment_count(p));
+    }
+
+    /// Register a custom not-found handler.
+    ///
+    /// When no route matches a request path, this handler is called instead of
+    /// returning the default plain-text 404 response. The handler receives the
+    /// full `HttpRequest` and empty `RouteParams`.
+    ///
+    /// Only one not-found handler can be registered; calling this again replaces
+    /// the previous handler.
+    pub fn set_not_found(&mut self, handler: HandlerFn) {
+        self.not_found_handler = Some(handler);
+    }
+
+    /// Returns the custom not-found handler, if one has been registered.
+    pub fn not_found_handler(&self) -> Option<HandlerFn> {
+        self.not_found_handler
     }
 
     pub fn insert(&mut self, path: &str, method: Method, handler: HandlerFn) {
@@ -123,6 +145,22 @@ impl RouteNode {
         // Then wrap each middleware around it, from the last (innermost) to the
         // first (outermost).
         build_chain(&matching, handler, req, &params)
+    }
+
+    /// Execute the middleware chain for a not-found request.
+    ///
+    /// This is used when a custom not-found handler is registered: the
+    /// middleware chain still runs (root/global middleware should execute
+    /// before the 404 handler), with the not-found handler at the center
+    /// instead of a route handler.
+    pub fn execute_not_found_with_middleware(
+        &self,
+        path: &str,
+        req: HttpRequest,
+    ) -> Option<HttpResponse<'static>> {
+        let handler = self.not_found_handler?;
+        let params = RouteParams::new();
+        Some(self.execute_with_middleware(path, handler, req, params))
     }
 
     /// Resolve a path and method to a `RouteResult`.
@@ -893,5 +931,126 @@ mod tests {
             }
             other => panic!("expected Found, got {}", route_result_name(&other)),
         }
+    }
+
+    // ---- 2.3 Custom 404 tests ----
+
+    fn custom_404_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+        HttpResponse::builder()
+            .with_status_code(StatusCode::NOT_FOUND)
+            .with_headers(vec![("content-type".to_string(), "text/html".to_string())])
+            .with_body(Cow::Owned(b"<h1>Custom Not Found</h1>".to_vec()))
+            .build()
+    }
+
+    /// 2.3.4a: With custom 404, unmatched route returns custom response
+    #[test]
+    fn test_custom_404_returns_custom_response() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/exists", Method::GET, matched_get_handler);
+        root.set_not_found(custom_404_handler);
+
+        // Unmatched path should invoke the custom 404 handler
+        let resp = root
+            .execute_not_found_with_middleware("/nonexistent", test_request("/nonexistent"))
+            .expect("expected custom 404 response");
+        assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(body_str(resp), "<h1>Custom Not Found</h1>");
+    }
+
+    /// 2.3.4b: Without custom 404, unmatched route returns default "Not Found"
+    #[test]
+    fn test_default_404_without_custom_handler() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/exists", Method::GET, matched_get_handler);
+        // No set_not_found call
+
+        // execute_not_found_with_middleware should return None
+        let resp =
+            root.execute_not_found_with_middleware("/nonexistent", test_request("/nonexistent"));
+        assert!(resp.is_none(), "expected None when no custom 404 is set");
+    }
+
+    /// 2.3.4c: Custom 404 handler receives the full HttpRequest
+    #[test]
+    fn test_custom_404_receives_full_request() {
+        fn inspecting_404(req: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            // Echo back the URL from the request to prove it was passed through
+            let url = req.url().to_string();
+            response_with_text(&format!("404 for: {url}"))
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.set_not_found(inspecting_404);
+
+        let req = HttpRequest::builder()
+            .with_method(Method::GET)
+            .with_url("/some/missing/path")
+            .build();
+        let resp = root
+            .execute_not_found_with_middleware("/some/missing/path", req)
+            .expect("expected custom 404 response");
+        let body = body_str(resp);
+        assert!(
+            body.contains("/some/missing/path"),
+            "expected URL in response body, got: {body}"
+        );
+    }
+
+    /// 2.3.4d: Custom 404 can return JSON content-type
+    #[test]
+    fn test_custom_404_json_content_type() {
+        fn json_404(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            HttpResponse::builder()
+                .with_status_code(StatusCode::NOT_FOUND)
+                .with_headers(vec![(
+                    "content-type".to_string(),
+                    "application/json".to_string(),
+                )])
+                .with_body(Cow::Owned(br#"{"error":"not found"}"#.to_vec()))
+                .build()
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.set_not_found(json_404);
+
+        let resp = root
+            .execute_not_found_with_middleware("/api/missing", test_request("/api/missing"))
+            .expect("expected custom 404 response");
+        assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
+        let ct = resp
+            .headers()
+            .iter()
+            .find(|(k, _)| k == "content-type")
+            .map(|(_, v)| v.clone());
+        assert_eq!(ct, Some("application/json".to_string()));
+        assert_eq!(body_str(resp), r#"{"error":"not found"}"#);
+    }
+
+    /// 2.3.4e: Root middleware executes before custom 404 handler
+    #[test]
+    fn test_root_middleware_runs_before_custom_404() {
+        fn logging_404(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            log_entry("custom_404");
+            response_with_text("custom 404")
+        }
+
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/exists", Method::GET, logging_handler);
+        root.set_middleware("/", root_middleware);
+        root.set_not_found(logging_404);
+
+        let resp = root
+            .execute_not_found_with_middleware("/nonexistent", test_request("/nonexistent"))
+            .expect("expected custom 404 response");
+
+        let log = get_log();
+        assert_eq!(
+            log,
+            vec!["root_mw_before", "custom_404", "root_mw_after"],
+            "middleware should wrap the custom 404 handler"
+        );
+        assert_eq!(body_str(resp), "custom 404");
     }
 }

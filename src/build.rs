@@ -31,6 +31,12 @@ struct MiddlewareExport {
     handler_path: String,
 }
 
+/// A detected `not_found.rs` file in the routes root directory.
+struct NotFoundExport {
+    /// The Rust module path to the handler function (e.g. "routes::not_found::get")
+    handler_path: String,
+}
+
 /// Generates a route tree from the routes directory and writes it to a file. Also ensures that
 /// mod.rs files are created in each directory.
 pub fn generate_routes() {
@@ -39,11 +45,13 @@ pub fn generate_routes() {
 
     let mut exports: Vec<MethodExport> = Vec::new();
     let mut middleware_exports: Vec<MiddlewareExport> = Vec::new();
+    let mut not_found_exports: Vec<NotFoundExport> = Vec::new();
     process_directory(
         routes_dir,
         String::new(),
         &mut exports,
         &mut middleware_exports,
+        &mut not_found_exports,
     );
 
     // Sort by route path for deterministic output
@@ -78,6 +86,14 @@ pub fn generate_routes() {
         ));
     }
 
+    // At most one not_found handler should be registered (from the root not_found.rs).
+    if let Some(nf) = not_found_exports.first() {
+        output.push_str(&format!(
+            "        root.set_not_found({});\n",
+            nf.handler_path,
+        ));
+    }
+
     output.push_str("        root\n    };\n}\n");
 
     let mut file = File::create(generated_file).unwrap();
@@ -89,6 +105,7 @@ fn process_directory(
     prefix: String,
     exports: &mut Vec<MethodExport>,
     middleware_exports: &mut Vec<MiddlewareExport>,
+    not_found_exports: &mut Vec<NotFoundExport>,
 ) {
     let mut mod_file = String::new();
     let mut children = vec![];
@@ -105,7 +122,13 @@ fn process_directory(
                 format!("{prefix}/{name}")
             };
             fs::create_dir_all(&path).unwrap();
-            process_directory(&path, next_prefix, exports, middleware_exports);
+            process_directory(
+                &path,
+                next_prefix,
+                exports,
+                middleware_exports,
+                not_found_exports,
+            );
             children.push(format!("pub mod {};\n", sanitize_mod(name)));
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let stem = path.file_stem().unwrap().to_str().unwrap();
@@ -135,6 +158,35 @@ fn process_directory(
                     prefix: mw_prefix,
                     handler_path: mw_handler_path,
                 });
+                continue;
+            }
+
+            // Detect not_found.rs — custom 404 handler, only in the routes root.
+            if stem == "not_found" {
+                children.push("pub mod not_found;\n".to_string());
+                let methods = detect_method_exports(&path);
+                if methods.is_empty() {
+                    panic!(
+                        "not_found.rs does not export any recognized HTTP method functions (get, post, put, etc.). \
+                         It must export at least one."
+                    );
+                }
+                // Use the `get` export if available, otherwise the first detected method.
+                let (fn_name, _) = methods
+                    .iter()
+                    .find(|(name, _)| *name == "get")
+                    .unwrap_or(&methods[0]);
+                let handler_path = if prefix.is_empty() {
+                    format!("routes::not_found::{fn_name}")
+                } else {
+                    let parts: Vec<String> = prefix
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| sanitize_mod(s))
+                        .collect();
+                    format!("routes::{}::not_found::{fn_name}", parts.join("::"))
+                };
+                not_found_exports.push(NotFoundExport { handler_path });
                 continue;
             }
 
