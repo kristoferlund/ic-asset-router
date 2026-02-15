@@ -1,0 +1,10 @@
+{% if comments.is_empty() %}
+<p>No comments yet.</p>
+{% else %}
+{% for comment in comments %}
+<div class="comment">
+    <div class="comment-author">{{ comment.author }}</div>
+    <div class="comment-body">{{ comment.body }}</div>
+</div>
+{% endfor %}
+{% endif %}

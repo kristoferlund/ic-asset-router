@@ -1,0 +1,23 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }} — HTMX App{% endblock %}
+
+{% block content %}
+<article>
+    <h2>{{ title }}</h2>
+    <p class="post-meta">By {{ author }}</p>
+    <div class="post-content">
+        <p>{{ content }}</p>
+    </div>
+</article>
+
+<div class="comments-section">
+    <h3>Comments</h3>
+    <div id="comments"
+         hx-get="/posts/{{ post_id }}/comments"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <span class="htmx-indicator">Loading comments…</span>
+    </div>
+</div>
+{% endblock %}

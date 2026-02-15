@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "htmx_app": {
+      "type": "rust",
+      "package": "htmx-app",
+      "candid": "htmx_app.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}
