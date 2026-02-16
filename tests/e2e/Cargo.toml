@@ -1,0 +1,13 @@
+[package]
+name = "e2e-tests"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "e2e_tests"
+path = "src/lib.rs"
+
+[dependencies]
+candid = "0.10"
+pocket-ic = "12.0"
+reqwest = { version = "0.12", features = ["blocking"] }
