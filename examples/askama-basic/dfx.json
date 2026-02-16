@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "askama_basic": {
+      "type": "rust",
+      "package": "askama-basic",
+      "candid": "askama_basic.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

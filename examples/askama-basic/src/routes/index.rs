@@ -4,51 +4,33 @@ use askama::Template;
 use ic_asset_router::RouteContext;
 use ic_http_certification::{HttpResponse, StatusCode};
 
-use super::Params;
-
-#[derive(Template)]
-#[template(path = "post.html")]
-struct PostTemplate<'a> {
-    title: &'a str,
-    content: &'a str,
-    author: &'a str,
-}
-
-struct Post {
+struct PostSummary {
+    id: &'static str,
     title: &'static str,
-    content: &'static str,
     author: &'static str,
 }
 
-fn load_post(id: &str) -> Post {
-    match id {
-        "1" => Post {
-            title: "First Post",
-            content: "This is the content of the first post.",
-            author: "Alice",
-        },
-        "2" => Post {
-            title: "Second Post",
-            content: "This is the content of the second post.",
-            author: "Bob",
-        },
-        _ => Post {
-            title: "Unknown Post",
-            content: "No post found with that ID.",
-            author: "Unknown",
-        },
-    }
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate<'a> {
+    posts: &'a [PostSummary],
 }
 
-pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
-    let post_id = &ctx.params.post_id;
-    let post = load_post(post_id);
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    let posts = vec![
+        PostSummary {
+            id: "1",
+            title: "First Post",
+            author: "Alice",
+        },
+        PostSummary {
+            id: "2",
+            title: "Second Post",
+            author: "Bob",
+        },
+    ];
 
-    let template = PostTemplate {
-        title: post.title,
-        content: post.content,
-        author: post.author,
-    };
+    let template = IndexTemplate { posts: &posts };
 
     match template.render() {
         Ok(html) => HttpResponse::builder()
