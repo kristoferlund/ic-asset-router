@@ -637,50 +637,50 @@ fn process_directory(
     }
 }
 
-/// Best-effort check: does the file contain `pub fn <name>(`?
+/// Scan a Rust source file for all `pub fn` declarations and return their names.
 ///
-/// Used for signature validation of reserved files (e.g. checking that
-/// `middleware.rs` exports `pub fn middleware`). Not a full parser — just
-/// scans lines for the expected pattern.
-fn has_pub_fn(path: &Path, name: &str) -> bool {
+/// This is a best-effort text scan — not a full parser. It looks for lines
+/// matching `pub fn <name>(` and extracts `<name>`. Used as the shared
+/// implementation for [`has_pub_fn`] and [`detect_method_exports`].
+fn scan_pub_fns(path: &Path) -> Vec<String> {
     let source = fs::read_to_string(path).unwrap_or_default();
-    let pattern = format!("pub fn {name}");
-    source.lines().any(|line| {
+    let prefix = "pub fn ";
+    let mut names = Vec::new();
+    for line in source.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with(&pattern) {
-            let rest = &trimmed[pattern.len()..].trim_start();
-            rest.starts_with('(')
-        } else {
-            false
-        }
-    })
-}
-
-/// Scan a Rust source file for `pub fn <method_name>` declarations matching
-/// recognized HTTP methods. Returns a list of `(fn_name, Method_variant)` pairs.
-fn detect_method_exports(path: &Path) -> Vec<(&'static str, &'static str)> {
-    let source = fs::read_to_string(path).unwrap_or_default();
-    let mut found = Vec::new();
-
-    for &(fn_name, variant) in METHOD_NAMES {
-        // Match `pub fn get(` with flexible whitespace
-        let pattern = format!("pub fn {fn_name}");
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with(&pattern) {
-                // Verify it's followed by `(` or whitespace-then-`(` to avoid
-                // matching e.g. `pub fn get_user` when looking for `get`.
-                let rest = &trimmed[pattern.len()..];
-                let rest_trimmed = rest.trim_start();
-                if rest_trimmed.starts_with('(') {
-                    found.push((fn_name, variant));
-                    break;
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            // Find the function name: the identifier before '(' or whitespace.
+            if let Some(paren_pos) = rest.find('(') {
+                let name = rest[..paren_pos].trim();
+                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    names.push(name.to_string());
                 }
             }
         }
     }
+    names
+}
 
-    found
+/// Best-effort check: does the file contain `pub fn <name>(`?
+///
+/// Used for signature validation of reserved files (e.g. checking that
+/// `middleware.rs` exports `pub fn middleware`). Delegates to [`scan_pub_fns`]
+/// and checks if `name` is in the result.
+fn has_pub_fn(path: &Path, name: &str) -> bool {
+    scan_pub_fns(path).iter().any(|n| n == name)
+}
+
+/// Scan a Rust source file for `pub fn <method_name>` declarations matching
+/// recognized HTTP methods. Returns a list of `(fn_name, Method_variant)` pairs.
+///
+/// Delegates to [`scan_pub_fns`] and filters against [`METHOD_NAMES`].
+fn detect_method_exports(path: &Path) -> Vec<(&'static str, &'static str)> {
+    let pub_fns = scan_pub_fns(path);
+    METHOD_NAMES
+        .iter()
+        .filter(|(fn_name, _)| pub_fns.iter().any(|n| n == fn_name))
+        .copied()
+        .collect()
 }
 
 /// Scan a Rust source file for a `#[route(path = "...")]` attribute and return
@@ -1271,8 +1271,26 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
 
     // --- process_directory integration tests (using temp dirs) ---
 
-    /// Helper: create a temp directory tree and run process_directory on it.
-    fn setup_temp_routes(structure: &[(&str, &str)]) -> std::path::PathBuf {
+    /// RAII guard for a temporary route directory. Cleans up the directory
+    /// tree on drop so tests do not leak temp files.
+    struct TempRouteDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempRouteDir {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRouteDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Helper: create a temp directory tree and return a guard that cleans up on drop.
+    fn setup_temp_routes(structure: &[(&str, &str)]) -> TempRouteDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1290,7 +1308,7 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
             }
             fs::write(&full, content).unwrap();
         }
-        base
+        TempRouteDir { path: base }
     }
 
     #[test]
@@ -1299,7 +1317,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].route_path, "/");
         assert_eq!(exports[0].method_variant, "Method::GET");
@@ -1311,7 +1336,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].route_path, "/about");
     }
@@ -1322,7 +1354,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].route_path, "/:postId");
         assert!(exports[0].params_type_path.is_some());
@@ -1334,7 +1373,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].route_path, "/*");
     }
@@ -1348,7 +1394,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         // middleware.rs should NOT be registered as a route
         assert!(exports.is_empty());
         // But it should be registered as middleware
@@ -1362,7 +1415,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         // not_found.rs should NOT be registered as a route
         assert!(exports.is_empty());
         // But it should be registered as not-found handler
@@ -1383,7 +1443,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
 
         let paths: Vec<&str> = exports.iter().map(|e| e.route_path.as_str()).collect();
         assert!(paths.contains(&"/"));
@@ -1410,7 +1477,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].route_path, "/ogimage.png");
     }
@@ -1425,7 +1499,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
     }
 
     #[test]
@@ -1435,7 +1516,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
     }
 
     #[test]
@@ -1444,7 +1532,14 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert!(exports.is_empty());
         assert!(mw.is_empty());
         assert!(nf.is_empty());
@@ -1466,7 +1561,14 @@ pub fn get() -> () { todo!() }
         let mut exports = Vec::new();
         let mut mw = Vec::new();
         let mut nf = Vec::new();
-        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
         assert_eq!(exports.len(), 1);
         assert!(exports[0].search_params_type_path.is_some());
     }

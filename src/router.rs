@@ -27,6 +27,18 @@ pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
 /// A standard [`HandlerFn`] must also be registered at the same path/method
 /// as a fallback for the query path and middleware chain. The
 /// `HandlerResultFn` is only called during `http_request_update`.
+///
+/// # Note on signature
+///
+/// This type intentionally uses the internal `(HttpRequest, RouteParams)`
+/// signature rather than the public `RouteContext`-based signature used by
+/// generated route handlers. The build script currently does not generate
+/// wrappers for `insert_result` calls — result handlers are registered
+/// manually via [`RouteNode::insert_result`].
+///
+/// If `insert_result` is ever wired into `__route_tree.rs` code generation,
+/// the same wrapper pattern used for `HandlerFn` (bridging `RouteParams` to
+/// `RouteContext<Params, SearchParams>`) should be applied here as well.
 pub type HandlerResultFn = fn(HttpRequest, RouteParams) -> HandlerResult;
 
 /// Result type for route handlers that supports conditional regeneration.
