@@ -10,7 +10,7 @@ use super::Params;
 thread_local! {
     static TERA: RefCell<Tera> = RefCell::new({
         let mut tera = Tera::default();
-        tera.add_raw_template("post.html", include_str!("../../../../templates/post.html"))
+        tera.add_raw_template("post.html", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/post.html")))
             .expect("failed to add post.html template");
         tera
     });

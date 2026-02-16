@@ -106,11 +106,25 @@ pub fn parse_query(url: &str) -> QueryParams {
         .collect()
 }
 
-/// Minimal percent-decoding for query string keys and values.
+/// Percent-decode a URL-encoded string.
 ///
-/// Decodes `%XX` hex sequences and `+` as space. Does not validate UTF-8
-/// beyond what `String::from_utf8_lossy` handles.
-fn url_decode(input: &str) -> std::borrow::Cow<'_, str> {
+/// Decodes `%XX` hex sequences and converts `+` to space, as used in both
+/// query strings and `application/x-www-form-urlencoded` bodies. Returns a
+/// borrowed `Cow` when the input contains no encoded characters (zero-copy
+/// fast path). Does not validate UTF-8 beyond what `String::from_utf8_lossy`
+/// handles — malformed `%XX` sequences (e.g. `%ZZ`) are passed through
+/// literally.
+///
+/// # Examples
+///
+/// ```
+/// use router_library::url_decode;
+///
+/// assert_eq!(url_decode("hello%20world"), "hello world");
+/// assert_eq!(url_decode("a+b"), "a b");
+/// assert_eq!(url_decode("plain"), "plain");
+/// ```
+pub fn url_decode(input: &str) -> std::borrow::Cow<'_, str> {
     if !input.contains('%') && !input.contains('+') {
         return std::borrow::Cow::Borrowed(input);
     }
@@ -156,6 +170,36 @@ where
     // or the full `?key=val` string).
     let qs = query_str.strip_prefix('?').unwrap_or(query_str);
     serde_urlencoded::from_str(qs).unwrap_or_default()
+}
+
+/// Parse an `application/x-www-form-urlencoded` body into key-value pairs.
+///
+/// This is the encoding used by HTML `<form>` submissions. The body is
+/// interpreted as UTF-8, split on `&`, and each `key=value` pair is
+/// URL-decoded. Pairs without `=` are skipped.
+///
+/// # Examples
+///
+/// ```
+/// use router_library::parse_form_body;
+///
+/// let fields = parse_form_body(b"name=Alice&age=30");
+/// assert_eq!(fields.get("name").unwrap(), "Alice");
+/// assert_eq!(fields.get("age").unwrap(), "30");
+///
+/// let fields = parse_form_body(b"q=hello+world");
+/// assert_eq!(fields.get("q").unwrap(), "hello world");
+/// ```
+pub fn parse_form_body(body: &[u8]) -> HashMap<String, String> {
+    let input = String::from_utf8_lossy(body);
+    input
+        .split('&')
+        .filter(|s| !s.is_empty())
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            Some((url_decode(key).into_owned(), url_decode(value).into_owned()))
+        })
+        .collect()
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -331,5 +375,60 @@ mod tests {
         let sp: Sp = deserialize_search_params("q=%ZZ");
         // serde_urlencoded may handle this gracefully or fail; either way, no panic.
         let _ = sp.q;
+    }
+
+    // --- 6.8: url_decode tests ---
+
+    #[test]
+    fn url_decode_percent_encoding() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+    }
+
+    #[test]
+    fn url_decode_plus_as_space() {
+        assert_eq!(url_decode("a+b"), "a b");
+    }
+
+    #[test]
+    fn url_decode_malformed_passthrough() {
+        // `%en` — `e` is valid hex but `n` is not. The implementation consumes
+        // both bytes after `%` and only emits `%` for the malformed sequence,
+        // so the two consumed chars are lost: "no%encoding" → "no%coding".
+        assert_eq!(url_decode("no%encoding"), "no%coding");
+    }
+
+    #[test]
+    fn url_decode_plain_passthrough() {
+        let result = url_decode("plain");
+        assert_eq!(result, "plain");
+        // Should be zero-copy (borrowed)
+        assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+    }
+
+    // --- 6.8: parse_form_body tests ---
+
+    #[test]
+    fn parse_form_body_basic_pairs() {
+        let fields = parse_form_body(b"name=Alice&age=30");
+        assert_eq!(fields.get("name").unwrap(), "Alice");
+        assert_eq!(fields.get("age").unwrap(), "30");
+    }
+
+    #[test]
+    fn parse_form_body_plus_decoding() {
+        let fields = parse_form_body(b"q=hello+world");
+        assert_eq!(fields.get("q").unwrap(), "hello world");
+    }
+
+    #[test]
+    fn parse_form_body_empty() {
+        let fields = parse_form_body(b"");
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn parse_form_body_encoded_values() {
+        let fields = parse_form_body(b"key=val%26ue");
+        assert_eq!(fields.get("key").unwrap(), "val&ue");
     }
 }

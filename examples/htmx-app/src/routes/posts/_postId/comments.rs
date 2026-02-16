@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use askama::Template;
 use ic_http_certification::{HttpResponse, StatusCode};
-use router_library::RouteContext;
+use router_library::{parse_form_body, RouteContext};
 
 use crate::data::{self, Comment};
 
@@ -30,8 +30,7 @@ pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
 pub fn post(ctx: RouteContext<Params>) -> HttpResponse<'static> {
     let post_id = ctx.params.post_id.clone();
 
-    let body_str = std::str::from_utf8(&ctx.body).unwrap_or("");
-    let fields = parse_form_urlencoded(body_str);
+    let fields = parse_form_body(&ctx.body);
 
     let author = fields
         .get("author")
@@ -67,38 +66,4 @@ fn render_template(template: &CommentsTemplate) -> HttpResponse<'static> {
             .with_body(Cow::<[u8]>::Owned(b"Template rendering failed".to_vec()))
             .build(),
     }
-}
-
-fn parse_form_urlencoded(input: &str) -> std::collections::HashMap<String, String> {
-    input
-        .split('&')
-        .filter(|s| !s.is_empty())
-        .filter_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?;
-            let value = parts.next().unwrap_or("");
-            Some((url_decode(key), url_decode(value)))
-        })
-        .collect()
-}
-
-fn url_decode(s: &str) -> String {
-    let s = s.replace('+', " ");
-    let mut result = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) =
-                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                result.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(result).unwrap_or_default()
 }
