@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "tera_basic": {
+      "type": "rust",
+      "package": "tera-basic",
+      "candid": "tera_basic.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

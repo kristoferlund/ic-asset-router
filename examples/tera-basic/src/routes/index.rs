@@ -5,53 +5,40 @@ use ic_asset_router::RouteContext;
 use ic_http_certification::{HttpResponse, StatusCode};
 use tera::{Context, Tera};
 
-use super::Params;
-
 thread_local! {
     static TERA: RefCell<Tera> = RefCell::new({
         let mut tera = Tera::default();
-        tera.add_raw_template("post.html", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/post.html")))
-            .expect("failed to add post.html template");
+        tera.add_raw_template("index.html", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/index.html")))
+            .expect("failed to add index.html template");
         tera
     });
 }
 
-struct Post {
+#[derive(serde::Serialize)]
+struct PostSummary {
+    id: &'static str,
     title: &'static str,
-    content: &'static str,
     author: &'static str,
 }
 
-fn load_post(id: &str) -> Post {
-    match id {
-        "1" => Post {
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    let posts = vec![
+        PostSummary {
+            id: "1",
             title: "First Post",
-            content: "This is the content of the first post.",
             author: "Alice",
         },
-        "2" => Post {
+        PostSummary {
+            id: "2",
             title: "Second Post",
-            content: "This is the content of the second post.",
             author: "Bob",
         },
-        _ => Post {
-            title: "Unknown Post",
-            content: "No post found with that ID.",
-            author: "Unknown",
-        },
-    }
-}
-
-pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
-    let post_id = &ctx.params.post_id;
-    let post = load_post(post_id);
+    ];
 
     let mut context = Context::new();
-    context.insert("title", post.title);
-    context.insert("content", post.content);
-    context.insert("author", post.author);
+    context.insert("posts", &posts);
 
-    let result = TERA.with(|t| t.borrow().render("post.html", &context));
+    let result = TERA.with(|t| t.borrow().render("index.html", &context));
 
     match result {
         Ok(html) => HttpResponse::builder()

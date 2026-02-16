@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Tera Basic</title>
+</head>
+<body>
+    <h1>Tera Basic</h1>
+    <p>File-based routing with Tera templates on the Internet Computer.</p>
+    <h2>Posts</h2>
+    <ul>
+    {% for post in posts %}
+        <li><a href="/posts/{{ post.id }}">{{ post.title }}</a> by {{ post.author }}</li>
+    {% endfor %}
+    </ul>
+</body>
+</html>

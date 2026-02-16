@@ -949,6 +949,7 @@ dependencies = [
  "ic-asset-router",
  "ic-cdk",
  "ic-http-certification",
+ "serde",
  "tera",
 ]
 
