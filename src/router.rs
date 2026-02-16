@@ -830,7 +830,7 @@ mod tests {
     use std::cell::RefCell;
 
     thread_local! {
-        static LOG: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     fn clear_log() {
