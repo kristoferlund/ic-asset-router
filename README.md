@@ -20,7 +20,7 @@ Build full-stack web applications on the [Internet Computer](https://internetcom
 ```toml
 [dependencies]
 candid = "0.10"
-ic-cdk = "0.18"
+ic-cdk = "0.19"
 ic-http-certification = "3.0"
 ic-asset-router = { path = "../ic-asset-router" }
 
