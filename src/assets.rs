@@ -493,6 +493,98 @@ mod tests {
         assert_eq!(last_certified_at("/posts/1"), Some(original_time));
     }
 
+    // ---- 5.5.8: Additional cache invalidation tests (proptest session) ----
+
+    /// invalidate_prefix does NOT over-match: "/posts" prefix should not remove "/postscript".
+    #[test]
+    fn invalidate_prefix_does_not_over_match() {
+        reset_dynamic_paths();
+        register_dynamic_path("/posts/1");
+        register_dynamic_path("/posts/2");
+        register_dynamic_path("/postscript"); // similar prefix but NOT a child of "/posts/"
+
+        let removed = remove_dynamic_prefix("/posts/");
+        assert_eq!(removed.len(), 2);
+        assert!(!is_dynamic_path("/posts/1"));
+        assert!(!is_dynamic_path("/posts/2"));
+        // "/postscript" should NOT have been removed
+        assert!(
+            is_dynamic_path("/postscript"),
+            "/postscript should survive /posts/ prefix invalidation"
+        );
+    }
+
+    /// invalidate_all_dynamic leaves the cache completely empty.
+    #[test]
+    fn invalidate_all_dynamic_leaves_empty() {
+        reset_dynamic_paths();
+        register_dynamic_path("/a");
+        register_dynamic_path("/b/c");
+        register_dynamic_path("/d/e/f");
+        assert_eq!(dynamic_path_count(), 3);
+
+        let removed = clear_dynamic_paths();
+        assert_eq!(removed.len(), 3);
+        assert_eq!(dynamic_path_count(), 0);
+        // Subsequent clear is a no-op
+        let removed2 = clear_dynamic_paths();
+        assert!(removed2.is_empty());
+        assert_eq!(dynamic_path_count(), 0);
+    }
+
+    /// invalidate_path on already-invalidated path is a no-op (no panic).
+    #[test]
+    fn invalidate_path_double_removal_is_noop() {
+        reset_dynamic_paths();
+        register_dynamic_path("/posts/42");
+        assert!(remove_dynamic_path("/posts/42"));
+        // Second removal returns false — already gone
+        assert!(!remove_dynamic_path("/posts/42"));
+        assert!(!is_dynamic_path("/posts/42"));
+    }
+
+    /// TTL boundary: exactly one nanosecond before expiry is NOT expired.
+    #[test]
+    fn ttl_one_ns_before_expiry_is_not_expired() {
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        let asset = CachedDynamicAsset {
+            certified_at: 1_000_000_000_000_000_000,
+            ttl: Some(Duration::from_secs(3600)),
+        };
+        let now = asset.certified_at + one_hour_ns - 1;
+        assert!(
+            !asset.is_expired(now),
+            "should not be expired 1ns before boundary"
+        );
+    }
+
+    /// TTL with very large certified_at and ttl does not overflow (saturating add).
+    #[test]
+    fn ttl_no_overflow_on_large_values() {
+        let asset = CachedDynamicAsset {
+            certified_at: u64::MAX - 1000,
+            ttl: Some(Duration::from_secs(3600)),
+        };
+        // saturating_add should clamp to u64::MAX, not wrap
+        // Any now < u64::MAX should not panic
+        assert!(asset.is_expired(u64::MAX));
+        // Near u64::MAX: the expiry is clamped to u64::MAX, so anything at
+        // u64::MAX is expired (u64::MAX >= u64::MAX).
+        assert!(!asset.is_expired(0));
+    }
+
+    /// Zero TTL means immediately expired.
+    #[test]
+    fn ttl_zero_duration_immediately_expired() {
+        let asset = CachedDynamicAsset {
+            certified_at: 1_000_000_000_000_000_000,
+            ttl: Some(Duration::from_secs(0)),
+        };
+        // At the exact certified_at time, 0 TTL means already expired.
+        assert!(asset.is_expired(asset.certified_at));
+        assert!(asset.is_expired(asset.certified_at + 1));
+    }
+
     // ---- 4.3.15: NotModified resets certified_at when TTL is active ----
 
     #[test]

@@ -1583,4 +1583,113 @@ mod tests {
         // No match
         assert!(!path_matches_prefix("/other", "/api"));
     }
+
+    // ---- 5.5.7: Property-based tests (proptest) ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn dummy_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("dummy")
+        }
+
+        proptest! {
+            /// Inserted routes are always found: any valid path that is inserted
+            /// should resolve to Found for the same method.
+            #[test]
+            fn inserted_routes_are_always_found(path in "/[a-z]{1,5}(/[a-z]{1,5}){0,4}") {
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert(&path, Method::GET, dummy_handler);
+                match root.resolve(&path, &Method::GET) {
+                    RouteResult::Found(_, _, _) => {},
+                    _ => panic!("expected Found for inserted path: {path}"),
+                }
+            }
+
+            /// Non-inserted routes are not found: a route that was never inserted
+            /// should resolve to NotFound (assuming no wildcard or param overlap).
+            #[test]
+            fn non_inserted_routes_are_not_found(
+                inserted in "/[a-z]{1,10}",
+                queried in "/[a-z]{1,10}"
+            ) {
+                prop_assume!(inserted != queried);
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert(&inserted, Method::GET, dummy_handler);
+                match root.resolve(&queried, &Method::GET) {
+                    RouteResult::NotFound => {},
+                    _ => panic!("expected NotFound for non-inserted route: {queried} (inserted: {inserted})"),
+                }
+            }
+
+            /// Param routes capture any single segment value.
+            #[test]
+            fn param_routes_capture_any_segment(
+                prefix in "/[a-z]{1,5}",
+                value in "[a-z0-9]{1,20}"
+            ) {
+                let route = format!("{prefix}/:id");
+                let path = format!("{prefix}/{value}");
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert(&route, Method::GET, dummy_handler);
+                match root.resolve(&path, &Method::GET) {
+                    RouteResult::Found(_, params, _) => {
+                        prop_assert_eq!(params.get("id").map(|s| s.as_str()), Some(value.as_str()));
+                    },
+                    other => panic!("expected Found, got {}", route_result_name(&other)),
+                }
+            }
+
+            /// Wildcard routes capture the remaining path (one or more segments).
+            #[test]
+            fn wildcard_routes_capture_remaining_path(
+                prefix in "/[a-z]{1,5}",
+                tail in "[a-z0-9]{1,5}(/[a-z0-9]{1,5}){0,3}"
+            ) {
+                let route = format!("{prefix}/*");
+                let path = format!("{prefix}/{tail}");
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert(&route, Method::GET, dummy_handler);
+                match root.resolve(&path, &Method::GET) {
+                    RouteResult::Found(_, params, _) => {
+                        prop_assert_eq!(params.get("*").map(|s| s.as_str()), Some(tail.as_str()));
+                    },
+                    other => panic!("expected Found, got {}", route_result_name(&other)),
+                }
+            }
+
+            /// Inserting a route does not affect resolution of a different method
+            /// on the same path — it should return MethodNotAllowed, not Found.
+            #[test]
+            fn wrong_method_returns_method_not_allowed(path in "/[a-z]{1,5}(/[a-z]{1,5}){0,3}") {
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert(&path, Method::GET, dummy_handler);
+                match root.resolve(&path, &Method::POST) {
+                    RouteResult::MethodNotAllowed(allowed) => {
+                        prop_assert!(allowed.contains(&Method::GET));
+                    },
+                    other => panic!("expected MethodNotAllowed, got {}", route_result_name(&other)),
+                }
+            }
+
+            /// Multiple param routes with different names capture correctly.
+            #[test]
+            fn multi_param_routes_capture_all(
+                a in "[a-z0-9]{1,10}",
+                b in "[a-z0-9]{1,10}"
+            ) {
+                let mut root = RouteNode::new(NodeType::Static("".into()));
+                root.insert("/x/:first/:second", Method::GET, dummy_handler);
+                let path = format!("/x/{a}/{b}");
+                match root.resolve(&path, &Method::GET) {
+                    RouteResult::Found(_, params, _) => {
+                        prop_assert_eq!(params.get("first").map(|s| s.as_str()), Some(a.as_str()));
+                        prop_assert_eq!(params.get("second").map(|s| s.as_str()), Some(b.as_str()));
+                    },
+                    other => panic!("expected Found, got {}", route_result_name(&other)),
+                }
+            }
+        }
+    }
 }
