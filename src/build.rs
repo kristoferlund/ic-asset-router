@@ -52,6 +52,10 @@ struct MethodExport {
     /// The Rust module path to the `Params` struct for this route (e.g.
     /// "routes::posts::_postId::Params"). `None` for routes without dynamic segments.
     params_type_path: Option<String>,
+    /// The Rust module path to the `SearchParams` struct for this route (e.g.
+    /// "routes::posts::index::SearchParams"). `None` for routes without typed
+    /// search params.
+    search_params_type_path: Option<String>,
 }
 
 /// Mapping from a route param name to its struct field name.
@@ -126,22 +130,37 @@ pub fn generate_routes_from(dir: &str) {
     output.push_str("use crate::routes;\n");
     output.push_str("use ic_http_certification::Method;\n");
     output.push_str("use router_library::router::{NodeType, RouteNode, RouteParams};\n");
-    output.push_str("use router_library::{RouteContext, parse_query};\n");
+    output
+        .push_str("use router_library::{RouteContext, parse_query, deserialize_search_params};\n");
     output.push_str("use ic_http_certification::HttpRequest;\n");
-    output.push_str("use ic_http_certification::HttpResponse;\n\n");
+    output.push_str("use ic_http_certification::HttpResponse;\n");
+    output.push('\n');
 
     // Generate wrapper functions for each route handler.
     // Each wrapper bridges the router's internal (HttpRequest, RouteParams) signature
-    // to the user-facing RouteContext<Params> signature.
+    // to the user-facing RouteContext<Params, SearchParams> signature.
     for (i, export) in exports.iter().enumerate() {
         let wrapper_name = format!("__route_handler_{i}");
         output.push_str(&format!(
             "fn {wrapper_name}(req: HttpRequest, raw_params: RouteParams) -> HttpResponse<'static> {{\n"
         ));
 
+        // Extract query string for both untyped (query) and typed (search) access.
+        // Strips the fragment (#...) if present so serde_urlencoded sees clean input.
+        output.push_str(
+            "    let __query_str = req.url().split_once('?').map(|(_, q)| q.split_once('#').map_or(q, |(qs, _)| qs)).unwrap_or(\"\");\n",
+        );
+
+        // Deserialize typed search params if the route defines SearchParams.
+        if let Some(ref search_path) = export.search_params_type_path {
+            output.push_str(&format!(
+                "    let __search: {search_path} = deserialize_search_params(__query_str);\n"
+            ));
+        }
+
         if let Some(ref params_path) = export.params_type_path {
             // Route has dynamic params — construct the typed Params struct.
-            output.push_str(&format!("    let ctx = RouteContext {{\n"));
+            output.push_str("    let ctx = RouteContext {\n");
             output.push_str(&format!("        params: {params_path} {{\n"));
             for pm in &export.params {
                 output.push_str(&format!(
@@ -154,6 +173,13 @@ pub fn generate_routes_from(dir: &str) {
             // Static route — use () as the params type.
             output.push_str("    let ctx = RouteContext {\n");
             output.push_str("        params: (),\n");
+        }
+
+        // Set the search field: typed SearchParams or () default.
+        if export.search_params_type_path.is_some() {
+            output.push_str("        search: __search,\n");
+        } else {
+            output.push_str("        search: (),\n");
         }
 
         output.push_str("        query: parse_query(req.url()),\n");
@@ -173,6 +199,7 @@ pub fn generate_routes_from(dir: &str) {
         );
         output.push_str("    let ctx = RouteContext {\n");
         output.push_str("        params: (),\n");
+        output.push_str("        search: (),\n");
         output.push_str("        query: parse_query(req.url()),\n");
         output.push_str("        method: req.method().clone(),\n");
         output.push_str("        headers: req.headers().to_vec(),\n");
@@ -536,6 +563,15 @@ fn process_directory(
                 }
             };
 
+            // Detect typed search params: if the route file defines
+            // `pub struct SearchParams`, the generated wiring will
+            // deserialize the query string into it via serde_urlencoded.
+            let search_params_type_path = if has_search_params(&path) {
+                Some(format!("{}::SearchParams", module_path))
+            } else {
+                None
+            };
+
             for (fn_name, variant) in &methods {
                 exports.push(MethodExport {
                     route_path: route_path.clone(),
@@ -543,6 +579,7 @@ fn process_directory(
                     method_variant: variant.to_string(),
                     params: param_mappings.clone(),
                     params_type_path: params_type_path.clone(),
+                    search_params_type_path: search_params_type_path.clone(),
                 });
             }
         }
@@ -652,6 +689,25 @@ fn scan_route_attribute(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Scan a Rust source file for a `pub struct SearchParams` declaration.
+///
+/// Returns `true` if the file contains a line matching `pub struct SearchParams`.
+/// This is a best-effort text scan (no full parser). The developer is expected
+/// to derive `serde::Deserialize` on the struct; the generated wiring will use
+/// `serde_urlencoded::from_str` to deserialize the query string into it.
+fn has_search_params(path: &Path) -> bool {
+    let source = fs::read_to_string(path).unwrap_or_default();
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("pub struct SearchParams")
+            && trimmed["pub struct SearchParams".len()..]
+                .trim_start()
+                .starts_with('{')
+            || trimmed == "pub struct SearchParams;"
+            || trimmed.starts_with("pub struct SearchParams<")
+    })
 }
 
 /// Convert a camelCase identifier to snake_case.
@@ -830,5 +886,57 @@ mod tests {
             file_to_route_path("/posts/_postId", "index"),
             "/posts/:postId"
         );
+    }
+
+    // --- has_search_params tests ---
+
+    fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("router_library_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn has_search_params_detects_struct() {
+        let path = write_temp_file(
+            "sp_detect.rs",
+            r#"
+use serde::Deserialize;
+
+#[derive(Deserialize, Default)]
+pub struct SearchParams {
+    pub page: Option<u32>,
+}
+"#,
+        );
+        assert!(has_search_params(&path));
+    }
+
+    #[test]
+    fn has_search_params_returns_false_when_absent() {
+        let path = write_temp_file(
+            "sp_absent.rs",
+            r#"
+pub fn get() -> String {
+    "hello".to_string()
+}
+"#,
+        );
+        assert!(!has_search_params(&path));
+    }
+
+    #[test]
+    fn has_search_params_ignores_private_struct() {
+        let path = write_temp_file(
+            "sp_private.rs",
+            r#"
+struct SearchParams {
+    page: Option<u32>,
+}
+"#,
+        );
+        assert!(!has_search_params(&path));
     }
 }
