@@ -1,9 +1,9 @@
-pub mod posts;
 pub mod echo;
-pub mod method_test;
-pub mod not_found;
+pub mod files;
 pub mod index;
 pub mod json;
-pub mod ttl_test;
+pub mod method_test;
 pub mod middleware;
-pub mod files;
+pub mod not_found;
+pub mod posts;
+pub mod ttl_test;

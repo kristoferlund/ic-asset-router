@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use askama::Template;
 use ic_http_certification::{HttpResponse, StatusCode};
-use router_library::{parse_form_body, RouteContext};
+use ic_asset_router::{parse_form_body, RouteContext};
 
 use crate::data::{self, Comment};
 

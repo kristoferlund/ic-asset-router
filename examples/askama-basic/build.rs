@@ -1,3 +1,3 @@
 fn main() {
-    router_library::build::generate_routes();
+    ic_asset_router::build::generate_routes();
 }

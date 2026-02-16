@@ -31,7 +31,7 @@ impl CachedDynamicAsset {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use router_library::assets::CachedDynamicAsset;
+    /// use ic_asset_router::assets::CachedDynamicAsset;
     ///
     /// let asset = CachedDynamicAsset {
     ///     certified_at: 1_000_000_000_000_000_000,
@@ -187,7 +187,7 @@ pub fn delete_assets(asset_paths: Vec<&str>) {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use router_library::invalidate_path;
+/// use ic_asset_router::invalidate_path;
 ///
 /// // After updating a blog post, force regeneration on next request:
 /// invalidate_path("/posts/42");
@@ -209,7 +209,7 @@ pub fn invalidate_path(path: &str) {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use router_library::invalidate_prefix;
+/// use ic_asset_router::invalidate_prefix;
 ///
 /// // Clear all cached posts after a bulk update:
 /// invalidate_prefix("/posts/");
@@ -249,7 +249,7 @@ pub fn invalidate_prefix(prefix: &str) {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use router_library::invalidate_all_dynamic;
+/// use ic_asset_router::invalidate_all_dynamic;
 ///
 /// // Nuclear option: force regeneration of every dynamic page:
 /// invalidate_all_dynamic();
@@ -285,7 +285,7 @@ pub fn invalidate_all_dynamic() {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use router_library::{last_certified_at, HandlerResult};
+/// use ic_asset_router::{last_certified_at, HandlerResult};
 ///
 /// fn result_handler(req: HttpRequest, params: RouteParams) -> HandlerResult {
 ///     if let Some(ts) = last_certified_at("/posts/42") {

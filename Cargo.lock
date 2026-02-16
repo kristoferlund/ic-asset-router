@@ -415,6 +415,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-asset-router"
+version = "0.0.0"
+dependencies = [
+ "ic-asset-certification",
+ "ic-cdk",
+ "ic-certification",
+ "ic-http-certification",
+ "include_dir",
+ "proptest",
+ "serde",
+ "serde_urlencoded",
+]
+
+[[package]]
 name = "ic-cdk"
 version = "0.18.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,20 +840,6 @@ name = "regex-syntax"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
-
-[[package]]
-name = "router_library"
-version = "0.0.0"
-dependencies = [
- "ic-asset-certification",
- "ic-cdk",
- "ic-certification",
- "ic-http-certification",
- "include_dir",
- "proptest",
- "serde",
- "serde_urlencoded",
-]
 
 [[package]]
 name = "rustix"

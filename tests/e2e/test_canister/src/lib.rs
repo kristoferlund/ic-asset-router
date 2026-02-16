@@ -18,14 +18,14 @@ fn setup() {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    router_library::set_asset_config(router_library::AssetConfig {
-        cache_config: router_library::CacheConfig {
+    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
+        cache_config: ic_asset_router::CacheConfig {
             default_ttl: None,
             per_route_ttl: HashMap::from([("/ttl_test".to_string(), Duration::from_secs(5))]),
         },
-        ..router_library::AssetConfig::default()
+        ..ic_asset_router::AssetConfig::default()
     });
-    router_library::assets::certify_all_assets(&ASSET_DIR);
+    ic_asset_router::assets::certify_all_assets(&ASSET_DIR);
 }
 
 #[init]
@@ -45,17 +45,17 @@ fn post_upgrade() {
 #[query]
 fn http_request(req: HttpRequest) -> HttpResponse<'static> {
     route_tree::ROUTES.with(|routes| {
-        router_library::http_request(
+        ic_asset_router::http_request(
             req,
             routes,
-            router_library::HttpRequestOptions { certify: true },
+            ic_asset_router::HttpRequestOptions { certify: true },
         )
     })
 }
 
 #[update]
 fn http_request_update(req: HttpRequest) -> HttpResponse<'static> {
-    route_tree::ROUTES.with(|routes| router_library::http_request_update(req, routes))
+    route_tree::ROUTES.with(|routes| ic_asset_router::http_request_update(req, routes))
 }
 
 // ---------------------------------------------------------------------------
@@ -64,12 +64,12 @@ fn http_request_update(req: HttpRequest) -> HttpResponse<'static> {
 
 #[update]
 fn invalidate(path: String) {
-    router_library::invalidate_path(&path);
+    ic_asset_router::invalidate_path(&path);
 }
 
 #[update]
 fn invalidate_all() {
-    router_library::invalidate_all_dynamic();
+    ic_asset_router::invalidate_all_dynamic();
 }
 
 // ---------------------------------------------------------------------------
@@ -78,5 +78,5 @@ fn invalidate_all() {
 
 #[query]
 fn dynamic_cache_count() -> u64 {
-    router_library::assets::dynamic_path_count() as u64
+    ic_asset_router::assets::dynamic_path_count() as u64
 }

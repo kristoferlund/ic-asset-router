@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use askama::Template;
 use ic_http_certification::{HttpResponse, StatusCode};
-use router_library::RouteContext;
+use ic_asset_router::RouteContext;
 
 use super::Params;
 

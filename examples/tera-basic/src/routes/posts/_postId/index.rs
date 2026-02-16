@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use ic_http_certification::{HttpResponse, StatusCode};
-use router_library::RouteContext;
+use ic_asset_router::RouteContext;
 use tera::{Context, Tera};
 
 use super::Params;

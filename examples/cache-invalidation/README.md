@@ -38,14 +38,14 @@ dfx canister call cache_invalidation invalidate_all
 In `src/lib.rs`:
 
 ```rust
-router_library::set_asset_config(router_library::AssetConfig {
-    cache_config: router_library::CacheConfig {
+ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
+    cache_config: ic_asset_router::CacheConfig {
         default_ttl: Some(Duration::from_secs(300)),
         per_route_ttl: HashMap::from([
             ("/ttl".to_string(), Duration::from_secs(30)),
         ]),
     },
-    ..router_library::AssetConfig::default()
+    ..ic_asset_router::AssetConfig::default()
 });
 ```
 

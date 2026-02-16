@@ -128,7 +128,7 @@ impl SecurityHeaders {
     /// # Examples
     ///
     /// ```
-    /// use router_library::SecurityHeaders;
+    /// use ic_asset_router::SecurityHeaders;
     ///
     /// let headers = SecurityHeaders::strict().to_headers();
     /// let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
@@ -166,7 +166,7 @@ impl SecurityHeaders {
     /// # Examples
     ///
     /// ```
-    /// use router_library::SecurityHeaders;
+    /// use ic_asset_router::SecurityHeaders;
     ///
     /// let headers = SecurityHeaders::permissive().to_headers();
     /// let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
@@ -197,7 +197,7 @@ impl SecurityHeaders {
     /// # Examples
     ///
     /// ```
-    /// use router_library::SecurityHeaders;
+    /// use ic_asset_router::SecurityHeaders;
     ///
     /// let headers = SecurityHeaders::none().to_headers();
     /// assert!(headers.is_empty());
@@ -278,7 +278,7 @@ impl Default for SecurityHeaders {
 /// # Examples
 ///
 /// ```
-/// use router_library::{AssetConfig, SecurityHeaders, CacheControl};
+/// use ic_asset_router::{AssetConfig, SecurityHeaders, CacheControl};
 ///
 /// let config = AssetConfig {
 ///     security_headers: SecurityHeaders::strict(),

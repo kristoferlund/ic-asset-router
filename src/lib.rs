@@ -22,13 +22,13 @@
 //! ```rust,ignore
 //! // build.rs
 //! fn main() {
-//!     router_library::build::generate_routes();
+//!     ic_asset_router::build::generate_routes();
 //! }
 //! ```
 //!
 //! ```rust,ignore
 //! // src/lib.rs
-//! use router_library::{http_request, http_request_update, set_asset_config, AssetConfig};
+//! use ic_asset_router::{http_request, http_request_update, set_asset_config, AssetConfig};
 //!
 //! include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
 //! ```

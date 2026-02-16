@@ -90,7 +90,7 @@ struct NotFoundExport {
 /// ```rust,ignore
 /// // build.rs
 /// fn main() {
-///     router_library::build::generate_routes();
+///     ic_asset_router::build::generate_routes();
 /// }
 /// ```
 pub fn generate_routes() {
@@ -143,10 +143,10 @@ pub fn generate_routes_from(dir: &str) {
     output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::Method;\n");
     output.push_str("#[allow(unused_imports)]\n");
-    output.push_str("use router_library::router::{NodeType, RouteNode, RouteParams};\n");
+    output.push_str("use ic_asset_router::router::{NodeType, RouteNode, RouteParams};\n");
     output.push_str("#[allow(unused_imports)]\n");
     output
-        .push_str("use router_library::{RouteContext, parse_query, deserialize_search_params};\n");
+        .push_str("use ic_asset_router::{RouteContext, parse_query, deserialize_search_params};\n");
     output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::HttpRequest;\n");
     output.push_str("#[allow(unused_imports)]\n");
@@ -939,7 +939,7 @@ mod tests {
     // --- has_search_params tests ---
 
     fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("router_library_test");
+        let dir = std::env::temp_dir().join("ic_asset_router_test");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         fs::write(&path, content).unwrap();
@@ -1297,7 +1297,7 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir()
-            .join("router_library_test")
+            .join("ic_asset_router_test")
             .join(format!("routes_{id}"));
         if base.exists() {
             fs::remove_dir_all(&base).unwrap();

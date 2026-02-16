@@ -21,9 +21,9 @@ Minimal canister demonstrating `SecurityHeaders` configuration.
 In `src/lib.rs`, the canister is configured with:
 
 ```rust
-router_library::set_asset_config(router_library::AssetConfig {
-    security_headers: router_library::SecurityHeaders::strict(),
-    ..router_library::AssetConfig::default()
+ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
+    security_headers: ic_asset_router::SecurityHeaders::strict(),
+    ..ic_asset_router::AssetConfig::default()
 });
 ```
 

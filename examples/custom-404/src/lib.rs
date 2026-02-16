@@ -12,7 +12,7 @@ mod route_tree {
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    router_library::set_asset_config(router_library::AssetConfig::default());
+    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
 }
 
 #[init]
@@ -32,15 +32,15 @@ fn post_upgrade() {
 #[query]
 fn http_request(req: HttpRequest) -> HttpResponse<'static> {
     route_tree::ROUTES.with(|routes| {
-        router_library::http_request(
+        ic_asset_router::http_request(
             req,
             routes,
-            router_library::HttpRequestOptions { certify: true },
+            ic_asset_router::HttpRequestOptions { certify: true },
         )
     })
 }
 
 #[update]
 fn http_request_update(req: HttpRequest) -> HttpResponse<'static> {
-    route_tree::ROUTES.with(|routes| router_library::http_request_update(req, routes))
+    route_tree::ROUTES.with(|routes| ic_asset_router::http_request_update(req, routes))
 }

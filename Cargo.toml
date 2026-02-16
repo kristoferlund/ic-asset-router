@@ -1,5 +1,5 @@
 [package]
-name = "router_library"
+name = "ic-asset-router"
 version = "0.0.0"
 edition = "2021"
 

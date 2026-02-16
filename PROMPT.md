@@ -1,4 +1,4 @@
-You are implementing changes to a Rust library at ~/gh/router_library/.
+You are implementing changes to a Rust library at ~/gh/ic-asset-router/.
 
 PLAN FILE: ~/bee/BEE NOTES/Projects/Asset Router/Phase 6/PLAN.md
 SPEC FILES: ~/bee/BEE NOTES/Projects/Asset Router/Phase 6/
@@ -30,5 +30,5 @@ Rules:
 - If `cargo check` or `cargo test` fails and your fix attempt also fails, STOP.
   Mark the failing task with `[!]` in PLAN.md and describe the failure briefly.
   Still commit whatever partial work exists before stopping.
-- Do not modify files outside ~/gh/router_library/ except for PLAN.md and SESSION.md.
+- Do not modify files outside ~/gh/ic-asset-router/ except for PLAN.md and SESSION.md.
 - ALWAYS commit before stopping. Every session must end with a git commit.

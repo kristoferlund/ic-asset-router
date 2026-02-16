@@ -2,7 +2,7 @@
 
 Server-side rendered blog with HTMX, running entirely in an ICP canister.
 
-Uses `router_library` for file-based routing and certified asset serving, Askama for compile-time HTML templates, and HTMX for partial page updates without client-side JavaScript.
+Uses `ic-asset-router` for file-based routing and certified asset serving, Askama for compile-time HTML templates, and HTMX for partial page updates without client-side JavaScript.
 
 ## Features
 
