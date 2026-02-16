@@ -37,11 +37,28 @@ struct NotFoundExport {
     handler_path: String,
 }
 
-/// Generates a route tree from the routes directory and writes it to a file. Also ensures that
-/// mod.rs files are created in each directory.
+/// Generates a route tree from the default `src/routes` directory.
+///
+/// This is a convenience wrapper around [`generate_routes_from`] for backwards
+/// compatibility.
 pub fn generate_routes() {
-    let routes_dir = Path::new("src/routes");
-    let generated_file = Path::new("src/__route_tree.rs");
+    generate_routes_from("src/routes");
+}
+
+/// Generates a route tree from the specified routes directory and writes it to a
+/// file. Also ensures that `mod.rs` files are created in each directory.
+///
+/// The `dir` parameter is the path to the routes directory relative to the
+/// crate root (e.g. `"src/routes"` or `"src/api/routes"`).
+pub fn generate_routes_from(dir: &str) {
+    let routes_dir = Path::new(dir);
+    let out_dir = std::env::var("OUT_DIR")
+        .expect("OUT_DIR not set — this function must be called from a build script");
+    let generated_file = Path::new(&out_dir).join("__route_tree.rs");
+
+    // Tell Cargo to re-run the build script when any file in the routes
+    // directory changes.
+    println!("cargo:rerun-if-changed={dir}");
 
     let mut exports: Vec<MethodExport> = Vec::new();
     let mut middleware_exports: Vec<MiddlewareExport> = Vec::new();
@@ -96,8 +113,100 @@ pub fn generate_routes() {
 
     output.push_str("        root\n    };\n}\n");
 
-    let mut file = File::create(generated_file).unwrap();
+    let mut file = File::create(&generated_file).unwrap();
     file.write_all(output.as_bytes()).unwrap();
+
+    // Generate route_manifest.json into OUT_DIR for debugging and inspection.
+    let manifest_file = Path::new(&out_dir).join("route_manifest.json");
+    let manifest = generate_manifest(&exports, &middleware_exports, &not_found_exports);
+    fs::write(manifest_file, manifest).unwrap();
+}
+
+/// Generate a JSON route manifest listing all registered routes, middleware,
+/// and the not-found handler. The manifest is intended for debugging and
+/// tooling — it is not consumed by the Rust build.
+fn generate_manifest(
+    exports: &[MethodExport],
+    middleware_exports: &[MiddlewareExport],
+    not_found_exports: &[NotFoundExport],
+) -> String {
+    let mut json = String::from("{\n  \"routes\": [\n");
+
+    for (i, export) in exports.iter().enumerate() {
+        // Extract parameter names from the route path (segments starting with ':')
+        let params: Vec<&str> = export
+            .route_path
+            .split('/')
+            .filter(|s| s.starts_with(':'))
+            .map(|s| &s[1..])
+            .collect();
+
+        // Extract the method name from the variant string (e.g. "Method::GET" → "GET")
+        let method = export
+            .method_variant
+            .strip_prefix("Method::")
+            .unwrap_or(&export.method_variant);
+
+        json.push_str("    {\n");
+        json.push_str(&format!(
+            "      \"path\": \"{}\",\n",
+            escape_json(&export.route_path)
+        ));
+        json.push_str(&format!(
+            "      \"handler\": \"{}\",\n",
+            escape_json(&export.handler_path)
+        ));
+        json.push_str(&format!("      \"method\": \"{method}\",\n"));
+
+        json.push_str("      \"params\": [");
+        for (j, param) in params.iter().enumerate() {
+            json.push_str(&format!("\"{}\"", escape_json(param)));
+            if j + 1 < params.len() {
+                json.push_str(", ");
+            }
+        }
+        json.push(']');
+
+        json.push_str("\n    }");
+        if i + 1 < exports.len() {
+            json.push(',');
+        }
+        json.push('\n');
+    }
+
+    json.push_str("  ],\n  \"middleware\": [\n");
+
+    for (i, mw) in middleware_exports.iter().enumerate() {
+        json.push_str("    {\n");
+        json.push_str(&format!(
+            "      \"prefix\": \"{}\",\n",
+            escape_json(&mw.prefix)
+        ));
+        json.push_str(&format!(
+            "      \"handler\": \"{}\"\n",
+            escape_json(&mw.handler_path)
+        ));
+        json.push_str("    }");
+        if i + 1 < middleware_exports.len() {
+            json.push(',');
+        }
+        json.push('\n');
+    }
+
+    json.push_str("  ],\n  \"not_found\": ");
+    if let Some(nf) = not_found_exports.first() {
+        json.push_str(&format!("\"{}\"", escape_json(&nf.handler_path)));
+    } else {
+        json.push_str("null");
+    }
+    json.push_str("\n}\n");
+
+    json
+}
+
+/// Escape a string for JSON output (handles backslash and double-quote).
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn process_directory(
