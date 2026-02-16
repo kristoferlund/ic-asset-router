@@ -1,11 +1,32 @@
-// Updated router with HttpRequest passed into handler
 use ic_http_certification::{HttpRequest, HttpResponse, Method};
 use std::collections::HashMap;
 
 use crate::middleware::MiddlewareFn;
 
+/// Dynamic route parameters extracted from the URL path.
+///
+/// Maps parameter names to their captured values. For example, a route
+/// registered as `/:postId/edit` matched against `/42/edit` produces
+/// `{"postId": "42"}`. Wildcard routes store the remaining path under
+/// the key `"*"`.
 pub type RouteParams = HashMap<String, String>;
+
+/// A synchronous route handler function.
+///
+/// Receives the full [`HttpRequest`] and the extracted [`RouteParams`],
+/// and returns an [`HttpResponse`]. This is the standard handler signature
+/// used by the router's middleware chain and certification pipeline.
 pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
+
+/// A route handler that returns [`HandlerResult`] instead of a bare response.
+///
+/// This variant supports conditional regeneration: the handler can return
+/// [`HandlerResult::NotModified`] to signal that the existing cached version
+/// is still valid, avoiding a full recertification cycle.
+///
+/// A standard [`HandlerFn`] must also be registered at the same path/method
+/// as a fallback for the query path and middleware chain. The
+/// `HandlerResultFn` is only called during `http_request_update`.
 pub type HandlerResultFn = fn(HttpRequest, RouteParams) -> HandlerResult;
 
 /// Result type for route handlers that supports conditional regeneration.
@@ -14,6 +35,22 @@ pub type HandlerResultFn = fn(HttpRequest, RouteParams) -> HandlerResult;
 /// `NotModified` to indicate that the existing cached version is still valid.
 /// When `NotModified` is returned, the library skips recertification entirely
 /// and resets the TTL timer if TTL-based caching is active.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use router_library::HandlerResult;
+/// use ic_http_certification::{HttpRequest, HttpResponse};
+/// use router_library::router::RouteParams;
+///
+/// fn my_result_handler(req: HttpRequest, params: RouteParams) -> HandlerResult {
+///     if content_unchanged() {
+///         HandlerResult::NotModified
+///     } else {
+///         HandlerResult::Response(build_new_response())
+///     }
+/// }
+/// ```
 pub enum HandlerResult {
     /// New content — certify and cache this response.
     Response(HttpResponse<'static>),
@@ -29,14 +66,27 @@ impl From<HttpResponse<'static>> for HandlerResult {
     }
 }
 
+/// The type of a node in the route trie.
+///
+/// Each segment of a route path corresponds to a [`RouteNode`] with one of
+/// these types. During path resolution the trie tries `Static` first, then
+/// `Param`, then `Wildcard` — giving static segments the highest priority.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NodeType {
+    /// A literal path segment (e.g. `"users"` in `/users`).
     Static(String),
+    /// A dynamic parameter segment (e.g. `:id` in `/users/:id`).
+    /// The contained string is the parameter name without the leading colon.
     Param(String),
+    /// A catch-all wildcard (`*`). Matches one or more remaining segments
+    /// and stores the captured tail in [`RouteParams`] under the key `"*"`.
     Wildcard,
 }
 
-/// Result of resolving a path + method against the route tree.
+/// Result of resolving a path and HTTP method against the route tree.
+///
+/// Returned by [`RouteNode::resolve`]. Callers should match on the three
+/// variants to determine how to handle the request.
 pub enum RouteResult {
     /// A handler was found for the given path and method.
     /// The optional `HandlerResultFn` is present when the route supports
@@ -49,9 +99,22 @@ pub enum RouteResult {
     NotFound,
 }
 
+/// A node in the radix-trie-style route tree.
+///
+/// The root node is always `NodeType::Static("")`. Routes are inserted by
+/// splitting the path into segments and descending through (or creating)
+/// child nodes. Resolution follows the same path, preferring static matches
+/// over parameter matches over wildcard matches.
+///
+/// Middleware, the custom not-found handler, and `HandlerResultFn` overrides
+/// are stored on the root node and consulted at dispatch time.
 pub struct RouteNode {
+    /// The type of this node (static segment, parameter, or wildcard).
     pub node_type: NodeType,
+    /// Child nodes forming the rest of the trie.
     pub children: Vec<RouteNode>,
+    /// Method → handler map for this node. A handler is present only for
+    /// methods that have been explicitly registered via [`insert`](Self::insert).
     pub handlers: HashMap<Method, HandlerFn>,
     /// Optional `HandlerResultFn` overrides for routes that support conditional
     /// regeneration. When present for a given method, `http_request_update` calls
@@ -70,6 +133,7 @@ pub struct RouteNode {
 }
 
 impl RouteNode {
+    /// Create a new route node with the given type and no children or handlers.
     pub fn new(node_type: NodeType) -> Self {
         Self {
             node_type,
@@ -117,6 +181,11 @@ impl RouteNode {
         self.not_found_handler
     }
 
+    /// Register a handler for the given path and HTTP method.
+    ///
+    /// Path segments starting with `:` are treated as dynamic parameters;
+    /// a lone `*` segment is a catch-all wildcard. If a handler already
+    /// exists for the same path and method it is silently replaced.
     pub fn insert(&mut self, path: &str, method: Method, handler: HandlerFn) {
         let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         self._insert(&segments, method, handler);

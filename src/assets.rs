@@ -25,6 +25,25 @@ impl CachedDynamicAsset {
     /// (nanoseconds since UNIX epoch).
     ///
     /// An asset without a TTL never expires.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use router_library::assets::CachedDynamicAsset;
+    ///
+    /// let asset = CachedDynamicAsset {
+    ///     certified_at: 1_000_000_000_000_000_000,
+    ///     ttl: Some(Duration::from_secs(3600)),
+    /// };
+    ///
+    /// // One hour later (in nanoseconds):
+    /// let one_hour_later = asset.certified_at + 3_600_000_000_000;
+    /// assert!(asset.is_expired(one_hour_later));
+    ///
+    /// // Before expiry:
+    /// assert!(!asset.is_expired(asset.certified_at + 1));
+    /// ```
     pub fn is_expired(&self, now_ns: u64) -> bool {
         match self.ttl {
             None => false,
@@ -36,7 +55,14 @@ impl CachedDynamicAsset {
     }
 }
 
-// Cache-control values are now configurable via `CacheControl` in `src/config.rs`.
+/// Certify all static assets from the given embedded directory.
+///
+/// Walks `asset_dir` recursively, determines MIME types, applies the global
+/// [`CacheControl`](crate::CacheControl) and [`SecurityHeaders`](crate::SecurityHeaders)
+/// configuration, and registers each file with the IC asset certification tree.
+///
+/// Call this once during canister initialization (e.g. in `init` and
+/// `post_upgrade`) after calling [`set_asset_config`](crate::set_asset_config).
 pub fn certify_all_assets(asset_dir: &Dir<'static>) {
     let encodings = vec![
         AssetEncoding::Brotli.default_config(),
@@ -126,7 +152,7 @@ fn collect_assets_with_config(
     }
 }
 
-/// Build the header list for an asset by merging the global [`ROUTER_CONFIG`]
+/// Build the header list for an asset by merging the global router configuration's
 /// security headers and custom headers with any per-call `additional_headers`.
 ///
 /// Merge order (last-write-wins for duplicate header names):
@@ -137,6 +163,11 @@ pub fn get_asset_headers(additional_headers: Vec<HeaderField>) -> Vec<HeaderFiel
     ROUTER_CONFIG.with(|c| c.borrow().merged_headers(additional_headers))
 }
 
+/// Delete previously certified assets by their paths.
+///
+/// Removes the assets from the certification tree and updates the root hash.
+/// This is a low-level operation; prefer [`invalidate_path`] or
+/// [`invalidate_prefix`] for dynamic asset invalidation.
 pub fn delete_assets(asset_paths: Vec<&str>) {
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
         asset_router.delete_assets_by_path(asset_paths);
@@ -151,6 +182,15 @@ pub fn delete_assets(asset_paths: Vec<&str>) {
 /// update call to regenerate the asset.
 ///
 /// Static assets (not in `DYNAMIC_CACHE`) are unaffected.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use router_library::invalidate_path;
+///
+/// // After updating a blog post, force regeneration on next request:
+/// invalidate_path("/posts/42");
+/// ```
 pub fn invalidate_path(path: &str) {
     let was_dynamic = DYNAMIC_CACHE.with(|dc| dc.borrow_mut().remove(path).is_some());
     if was_dynamic {
@@ -163,9 +203,17 @@ pub fn invalidate_path(path: &str) {
 
 /// Invalidate all cached dynamic assets whose path starts with the given prefix.
 ///
-/// Example: `invalidate_prefix("/posts/")` clears `/posts/1`, `/posts/2`, etc.
-///
 /// Static assets are unaffected.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use router_library::invalidate_prefix;
+///
+/// // Clear all cached posts after a bulk update:
+/// invalidate_prefix("/posts/");
+/// // Clears /posts/1, /posts/2, etc. but not /postscript
+/// ```
 pub fn invalidate_prefix(prefix: &str) {
     let to_remove: Vec<String> = DYNAMIC_CACHE.with(|dc| {
         dc.borrow()
@@ -196,6 +244,15 @@ pub fn invalidate_prefix(prefix: &str) {
 /// Invalidate all dynamically generated assets.
 ///
 /// Static assets (embedded at compile time) are unaffected.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use router_library::invalidate_all_dynamic;
+///
+/// // Nuclear option: force regeneration of every dynamic page:
+/// invalidate_all_dynamic();
+/// ```
 pub fn invalidate_all_dynamic() {
     let all: Vec<String> = DYNAMIC_CACHE.with(|dc| {
         let mut map = dc.borrow_mut();
@@ -218,10 +275,28 @@ pub fn invalidate_all_dynamic() {
 ///
 /// Handlers can use this to decide whether regeneration is actually needed:
 /// if the underlying data hasn't changed since `last_certified_at`, the handler
-/// can return `HandlerResult::NotModified` to skip recertification.
+/// can return [`HandlerResult::NotModified`](crate::HandlerResult::NotModified)
+/// to skip recertification.
 ///
 /// Returns `None` if the path is not in the dynamic cache (i.e., it has never
 /// been generated, or has been invalidated).
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use router_library::{last_certified_at, HandlerResult};
+///
+/// fn result_handler(req: HttpRequest, params: RouteParams) -> HandlerResult {
+///     if let Some(ts) = last_certified_at("/posts/42") {
+///         let data_updated_at = get_last_update_timestamp(); // your logic
+///         if data_updated_at <= ts {
+///             return HandlerResult::NotModified;
+///         }
+///     }
+///     // Data changed — regenerate
+///     HandlerResult::Response(build_response())
+/// }
+/// ```
 pub fn last_certified_at(path: &str) -> Option<u64> {
     DYNAMIC_CACHE.with(|dc| dc.borrow().get(path).map(|entry| entry.certified_at))
 }

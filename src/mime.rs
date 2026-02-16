@@ -1,5 +1,8 @@
-/// Get MIME type for a file based on extension
-/// Returns application/octet-stream as fallback for unknown types
+/// Determine the MIME type for a file path based on its extension.
+///
+/// Covers common web asset types (HTML, CSS, JS, images, fonts, media,
+/// archives). Returns `"application/octet-stream"` for unrecognized
+/// extensions.
 pub fn get_mime_type(path: &str) -> &'static str {
     let extension = path.rsplit('.').next().unwrap_or("");
 

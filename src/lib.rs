@@ -1,3 +1,38 @@
+//! File-based HTTP router and asset certification library for Internet Computer canisters.
+//!
+//! This library provides:
+//!
+//! - **File-based routing** — place handler files in `src/routes/` and the build
+//!   script generates a route tree automatically. Dynamic segments use `_param`
+//!   naming, catch-all routes use `all.rs`.
+//! - **IC response certification** — static and dynamic assets are certified via
+//!   the IC HTTP certification library so that boundary nodes can verify responses.
+//! - **Typed route context** — handlers receive a [`RouteContext<P, S>`] with typed
+//!   path parameters, typed search (query) parameters, headers, body, and URL.
+//! - **Middleware** — scoped middleware functions wrap handler execution for
+//!   cross-cutting concerns (auth, logging, header injection).
+//! - **Security headers** — configurable presets ([`SecurityHeaders::strict`],
+//!   [`SecurityHeaders::permissive`], [`SecurityHeaders::none`]) for standard
+//!   security response headers.
+//! - **Cache control** — configurable `Cache-Control` for static and dynamic
+//!   assets, plus TTL-based cache invalidation for dynamic content.
+//!
+//! # Quick start
+//!
+//! ```rust,ignore
+//! // build.rs
+//! fn main() {
+//!     router_library::build::generate_routes();
+//! }
+//! ```
+//!
+//! ```rust,ignore
+//! // src/lib.rs
+//! use router_library::{http_request, http_request_update, set_asset_config, AssetConfig};
+//!
+//! include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
+//! ```
+
 /// Debug logging macro gated behind the `debug-logging` feature flag.
 /// When enabled, expands to `ic_cdk::println!`; otherwise compiles to nothing.
 #[cfg(feature = "debug-logging")]
@@ -65,12 +100,19 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
         .build()
 }
 
+/// Static and dynamic asset certification, invalidation, and serving helpers.
 pub mod assets;
+/// Build-script utilities for file-based route generation.
 pub mod build;
+/// Global configuration types: security headers, cache control, TTL settings.
 pub mod config;
+/// Request context types passed to route handlers.
 pub mod context;
+/// Middleware type definition.
 pub mod middleware;
+/// MIME type detection from file extensions.
 pub mod mime;
+/// Route trie, handler types, and dispatch logic.
 pub mod router;
 
 pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at};
@@ -98,7 +140,14 @@ pub fn set_asset_config(config: AssetConfig) {
     });
 }
 
+/// Options controlling the behavior of [`http_request`].
 pub struct HttpRequestOptions {
+    /// Whether to attempt serving a certified response from the asset router.
+    ///
+    /// When `true` (the default), the library checks the asset router for a
+    /// previously certified response and returns it directly if available.
+    /// When `false`, the handler runs on every request and the response is
+    /// served with a skip-certification proof.
     pub certify: bool,
 }
 
@@ -108,7 +157,18 @@ impl Default for HttpRequestOptions {
     }
 }
 
-/// Serve assets that have already been certified, or upgrade the request to an update call
+/// Handle an HTTP query-path request.
+///
+/// This is the IC `http_request` entry point. It resolves the incoming
+/// request against the route tree and either:
+///
+/// 1. Serves a previously certified response from the asset router, or
+/// 2. Upgrades the request to an update call (returns `upgrade: true`) so
+///    that the handler can run in `http_request_update` and certify a new
+///    response.
+///
+/// Non-GET/HEAD requests are always upgraded. GET requests for dynamic
+/// routes with expired TTLs are also upgraded.
 pub fn http_request(
     req: HttpRequest,
     root_route_node: &RouteNode,
@@ -292,8 +352,16 @@ fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> Http
     response
 }
 
-/// Match incoming requests to the appropriate handler, generating assets as needed
-/// and certifying them for future requests.
+/// Handle an HTTP update-path request.
+///
+/// This is the IC `http_request_update` entry point. It runs the matched
+/// route handler (through the middleware chain), certifies the response in
+/// the asset router, and caches it for future query-path serving.
+///
+/// If a [`HandlerResultFn`](router::HandlerResultFn) is registered for the
+/// route, it is called first to check for [`HandlerResult::NotModified`].
+/// A `NotModified` result preserves the existing cached response and resets
+/// the TTL timer (if TTL-based caching is active).
 pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> HttpResponse<'static> {
     debug_log!("http_request_update: {:?}", req.url());
 

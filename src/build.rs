@@ -81,16 +81,27 @@ struct NotFoundExport {
     handler_path: String,
 }
 
-/// Generates a route tree from the default `src/routes` directory.
+/// Generate the route tree from the default `src/routes` directory.
 ///
-/// This is a convenience wrapper around [`generate_routes_from`] for backwards
-/// compatibility.
+/// This is a convenience wrapper around [`generate_routes_from`] that uses
+/// `"src/routes"` as the routes directory. Call this from your crate's
+/// `build.rs`:
+///
+/// ```rust,ignore
+/// // build.rs
+/// fn main() {
+///     router_library::build::generate_routes();
+/// }
+/// ```
 pub fn generate_routes() {
     generate_routes_from("src/routes");
 }
 
-/// Generates a route tree from the specified routes directory and writes it to a
-/// file. Also ensures that `mod.rs` files are created in each directory.
+/// Generate the route tree from a custom routes directory.
+///
+/// Scans `dir` recursively for `.rs` route files, generates handler wiring
+/// code into `OUT_DIR/__route_tree.rs`, creates `mod.rs` files for IDE
+/// visibility, and emits a `route_manifest.json` for debugging.
 ///
 /// The `dir` parameter is the path to the routes directory relative to the
 /// crate root (e.g. `"src/routes"` or `"src/api/routes"`).

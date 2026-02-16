@@ -119,11 +119,24 @@ pub struct SecurityHeaders {
 }
 
 impl SecurityHeaders {
-    /// Strict preset -- mirrors the library's original hardcoded behavior plus
+    /// Strict preset — mirrors the library's original hardcoded behavior plus
     /// `Cross-Origin-Resource-Policy`, `X-DNS-Prefetch-Control`, and
     /// `X-Permitted-Cross-Domain-Policies`.
     ///
     /// Suitable for apps that do not load cross-origin resources.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use router_library::SecurityHeaders;
+    ///
+    /// let headers = SecurityHeaders::strict().to_headers();
+    /// let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+    /// assert!(names.contains(&"strict-transport-security"));
+    /// assert!(names.contains(&"x-content-type-options"));
+    /// assert!(names.contains(&"x-frame-options"));
+    /// assert!(names.contains(&"cross-origin-embedder-policy"));
+    /// ```
     pub fn strict() -> Self {
         Self {
             hsts: Some("max-age=31536000; includeSubDomains".into()),
@@ -144,10 +157,25 @@ impl SecurityHeaders {
         }
     }
 
-    /// Permissive preset -- allows cross-origin resources, iframe embedding via
+    /// Permissive preset — allows cross-origin resources, iframe embedding via
     /// `SAMEORIGIN`, and relaxed referrer policy.
     ///
-    /// Suitable for SPAs loading external fonts, images, scripts.
+    /// Suitable for SPAs loading external fonts, images, scripts. This is the
+    /// default preset returned by [`SecurityHeaders::default()`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use router_library::SecurityHeaders;
+    ///
+    /// let headers = SecurityHeaders::permissive().to_headers();
+    /// let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+    /// // Permissive does not set COEP (which would break external resources)
+    /// assert!(!names.contains(&"cross-origin-embedder-policy"));
+    /// // But still sets HSTS and X-Content-Type-Options
+    /// assert!(names.contains(&"strict-transport-security"));
+    /// assert!(names.contains(&"x-content-type-options"));
+    /// ```
     pub fn permissive() -> Self {
         Self {
             hsts: Some("max-age=31536000; includeSubDomains".into()),
@@ -164,7 +192,16 @@ impl SecurityHeaders {
         }
     }
 
-    /// No security headers -- the consumer takes full responsibility.
+    /// No security headers — the consumer takes full responsibility.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use router_library::SecurityHeaders;
+    ///
+    /// let headers = SecurityHeaders::none().to_headers();
+    /// assert!(headers.is_empty());
+    /// ```
     pub fn none() -> Self {
         Self {
             hsts: None,
@@ -237,6 +274,21 @@ impl Default for SecurityHeaders {
 ///
 /// Controls security headers, cache-control, custom headers, and TTL-based
 /// caching applied to all responses.
+///
+/// # Examples
+///
+/// ```
+/// use router_library::{AssetConfig, SecurityHeaders, CacheControl};
+///
+/// let config = AssetConfig {
+///     security_headers: SecurityHeaders::strict(),
+///     cache_control: CacheControl {
+///         static_assets: "public, max-age=3600".into(),
+///         ..CacheControl::default()
+///     },
+///     ..AssetConfig::default()
+/// };
+/// ```
 pub struct AssetConfig {
     /// Typed security headers. Use a preset ([`SecurityHeaders::strict()`],
     /// [`SecurityHeaders::permissive()`], [`SecurityHeaders::none()`]) or
