@@ -326,6 +326,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ic-asset-router"
+version = "0.0.0"
+dependencies = [
+ "ic-asset-certification",
+ "ic-cdk",
+ "ic-certification",
+ "ic-http-certification",
+ "include_dir",
+ "serde",
+ "serde_urlencoded",
+]
+
+[[package]]
 name = "ic-cdk"
 version = "0.18.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,19 +628,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
-name = "router_library"
-version = "0.0.0"
-dependencies = [
- "ic-asset-certification",
- "ic-cdk",
- "ic-certification",
- "ic-http-certification",
- "include_dir",
- "serde",
- "serde_urlencoded",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,10 +795,10 @@ name = "test-canister"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ic-asset-router",
  "ic-cdk",
  "ic-http-certification",
  "include_dir",
- "router_library",
 ]
 
 [[package]]

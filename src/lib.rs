@@ -248,47 +248,70 @@ pub fn http_request(
                 })
             }
             true => {
-                // TTL check: if the path is a dynamic asset with an expired TTL,
-                // upgrade to an update call to regenerate it.
-                let ttl_expired = DYNAMIC_CACHE.with(|dc| {
-                    let cache = dc.borrow();
-                    if let Some(entry) = cache.get(&path) {
-                        // Effective TTL: entry TTL > per-route TTL > default TTL > None
-                        let effective_ttl = entry.ttl.or_else(|| {
-                            ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path))
-                        });
-                        if let Some(ttl) = effective_ttl {
-                            let now_ns = ic_cdk::api::time();
-                            let expiry_ns =
-                                entry.certified_at.saturating_add(ttl.as_nanos() as u64);
-                            return now_ns >= expiry_ns;
-                        }
-                    }
-                    false
-                });
-
-                if ttl_expired {
-                    debug_log!("upgrading (TTL expired for {})", path);
-                    return HttpResponse::builder().with_upgrade(true).build();
+                // Check DYNAMIC_CACHE to determine cache state for this path.
+                // Three outcomes:
+                //   Missing  — path was never generated or was invalidated; upgrade.
+                //   Expired  — TTL elapsed; upgrade to regenerate.
+                //   Valid    — serve from asset router.
+                //
+                // We must check DYNAMIC_CACHE *before* calling serve_asset()
+                // because the AssetRouter may have a /__not_found fallback
+                // registered for scope "/". If the exact asset was deleted
+                // (via invalidate_path), serve_asset() would match the
+                // fallback and incorrectly return a 404 instead of upgrading.
+                enum CacheState {
+                    Missing,
+                    Expired,
+                    Valid,
                 }
 
-                ASSET_ROUTER.with_borrow(|asset_router| {
-                    let cert = match data_certificate() {
-                        Some(c) => c,
-                        None => {
-                            debug_log!("upgrading (no data certificate)");
-                            return HttpResponse::builder().with_upgrade(true).build();
+                let cache_state = DYNAMIC_CACHE.with(|dc| {
+                    let cache = dc.borrow();
+                    match cache.get(&path) {
+                        Some(entry) => {
+                            let effective_ttl = entry.ttl.or_else(|| {
+                                ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path))
+                            });
+                            if let Some(ttl) = effective_ttl {
+                                let now_ns = ic_cdk::api::time();
+                                let expiry_ns =
+                                    entry.certified_at.saturating_add(ttl.as_nanos() as u64);
+                                if now_ns >= expiry_ns {
+                                    return CacheState::Expired;
+                                }
+                            }
+                            CacheState::Valid
                         }
-                    };
-                    if let Ok(response) = asset_router.serve_asset(&cert, &req) {
-                        debug_log!("serving directly");
-                        response
-                    } else {
-                        debug_log!("upgrading");
+                        None => CacheState::Missing,
+                    }
+                });
 
+                match cache_state {
+                    CacheState::Missing => {
+                        debug_log!("upgrading (not in dynamic cache: {})", path);
                         HttpResponse::builder().with_upgrade(true).build()
                     }
-                })
+                    CacheState::Expired => {
+                        debug_log!("upgrading (TTL expired for {})", path);
+                        HttpResponse::builder().with_upgrade(true).build()
+                    }
+                    CacheState::Valid => ASSET_ROUTER.with_borrow(|asset_router| {
+                        let cert = match data_certificate() {
+                            Some(c) => c,
+                            None => {
+                                debug_log!("upgrading (no data certificate)");
+                                return HttpResponse::builder().with_upgrade(true).build();
+                            }
+                        };
+                        if let Ok(response) = asset_router.serve_asset(&cert, &req) {
+                            debug_log!("serving directly");
+                            response
+                        } else {
+                            debug_log!("upgrading");
+                            HttpResponse::builder().with_upgrade(true).build()
+                        }
+                    }),
+                }
             }
         },
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
