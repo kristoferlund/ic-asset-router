@@ -1,3 +1,5 @@
+use std::{collections::HashMap, time::Duration};
+
 use ic_http_certification::HeaderField;
 
 /// Global cache-control configuration for static and dynamic assets.
@@ -23,6 +25,37 @@ impl Default for CacheControl {
             static_assets: "public, max-age=31536000, immutable".into(),
             dynamic_assets: "public, no-cache, no-store".into(),
         }
+    }
+}
+
+/// TTL-based cache configuration for dynamic assets.
+///
+/// Controls how long dynamically generated assets remain valid before
+/// the library triggers re-generation via an update call.
+pub struct CacheConfig {
+    /// Default TTL applied to all dynamic assets that don't have an explicit TTL.
+    /// `None` means dynamic assets are cached indefinitely (backwards-compatible).
+    pub default_ttl: Option<Duration>,
+    /// Per-route TTL overrides. Keys are exact path strings (e.g. `"/posts/1"`).
+    /// A per-route TTL takes precedence over `default_ttl`.
+    pub per_route_ttl: HashMap<String, Duration>,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            default_ttl: None,
+            per_route_ttl: HashMap::new(),
+        }
+    }
+}
+
+impl CacheConfig {
+    /// Resolve the effective TTL for a given path.
+    ///
+    /// Priority: per-route TTL > default TTL > None (cache forever).
+    pub fn effective_ttl(&self, path: &str) -> Option<Duration> {
+        self.per_route_ttl.get(path).copied().or(self.default_ttl)
     }
 }
 
@@ -202,7 +235,8 @@ impl Default for SecurityHeaders {
 
 /// Global configuration for the asset router.
 ///
-/// Controls security headers, cache-control, and custom headers applied to all responses.
+/// Controls security headers, cache-control, custom headers, and TTL-based
+/// caching applied to all responses.
 pub struct AssetConfig {
     /// Typed security headers. Use a preset ([`SecurityHeaders::strict()`],
     /// [`SecurityHeaders::permissive()`], [`SecurityHeaders::none()`]) or
@@ -211,6 +245,9 @@ pub struct AssetConfig {
 
     /// Cache-Control configuration for static and dynamic assets.
     pub cache_control: CacheControl,
+
+    /// TTL-based cache configuration for dynamic assets.
+    pub cache_config: CacheConfig,
 
     /// Arbitrary headers appended after security headers.
     ///
@@ -224,6 +261,7 @@ impl Default for AssetConfig {
         Self {
             security_headers: SecurityHeaders::default(),
             cache_control: CacheControl::default(),
+            cache_config: CacheConfig::default(),
             custom_headers: Vec::new(),
         }
     }
@@ -351,6 +389,7 @@ mod tests {
         let config = AssetConfig {
             security_headers: SecurityHeaders::strict(),
             cache_control: CacheControl::default(),
+            cache_config: CacheConfig::default(),
             custom_headers: vec![("x-frame-options".to_string(), "SAMEORIGIN".to_string())],
         };
         let merged = config.merged_headers(vec![]);
@@ -367,6 +406,7 @@ mod tests {
         let config = AssetConfig {
             security_headers: SecurityHeaders::strict(),
             cache_control: CacheControl::default(),
+            cache_config: CacheConfig::default(),
             custom_headers: vec![("x-frame-options".to_string(), "SAMEORIGIN".to_string())],
         };
         let merged = config.merged_headers(vec![(
@@ -452,5 +492,38 @@ mod tests {
             config.cache_control.dynamic_assets,
             "public, no-cache, no-store"
         );
+    }
+
+    // ---- 4.1.16: CacheConfig::default() has default_ttl: None and empty per_route_ttl ----
+
+    #[test]
+    fn cache_config_default_has_none_and_empty() {
+        let cc = CacheConfig::default();
+        assert!(cc.default_ttl.is_none());
+        assert!(cc.per_route_ttl.is_empty());
+    }
+
+    // ---- 4.1.20: per-route TTL overrides default TTL ----
+
+    #[test]
+    fn per_route_ttl_overrides_default_ttl() {
+        let cc = CacheConfig {
+            default_ttl: Some(Duration::from_secs(3600)),
+            per_route_ttl: HashMap::from([("/posts/1".to_string(), Duration::from_secs(60))]),
+        };
+        // Per-route TTL should win
+        assert_eq!(cc.effective_ttl("/posts/1"), Some(Duration::from_secs(60)));
+        // Path without per-route override falls back to default
+        assert_eq!(cc.effective_ttl("/about"), Some(Duration::from_secs(3600)));
+        // With no default and no per-route, returns None
+        let cc_no_default = CacheConfig {
+            default_ttl: None,
+            per_route_ttl: HashMap::from([("/posts/1".to_string(), Duration::from_secs(60))]),
+        };
+        assert_eq!(
+            cc_no_default.effective_ttl("/posts/1"),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(cc_no_default.effective_ttl("/about"), None);
     }
 }

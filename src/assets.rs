@@ -1,9 +1,40 @@
+use std::time::Duration;
+
 use ic_asset_certification::{Asset, AssetConfig, AssetEncoding};
 use ic_cdk::api::certified_data_set;
 use ic_http_certification::HeaderField;
 use include_dir::Dir;
 
-use crate::{mime::get_mime_type, ASSET_ROUTER, DYNAMIC_PATHS, ROUTER_CONFIG};
+use crate::{mime::get_mime_type, ASSET_ROUTER, DYNAMIC_CACHE, ROUTER_CONFIG};
+
+/// Metadata for a dynamically generated asset cached by the library.
+///
+/// Tracks when the asset was certified and its optional TTL, enabling
+/// TTL-based cache invalidation in the query path.
+pub struct CachedDynamicAsset {
+    /// Timestamp (nanoseconds since UNIX epoch) when the asset was certified.
+    /// Obtained via `ic_cdk::api::time()`.
+    pub certified_at: u64,
+    /// Optional time-to-live. If `None`, the asset is cached indefinitely
+    /// (backwards-compatible with pre-TTL behavior).
+    pub ttl: Option<Duration>,
+}
+
+impl CachedDynamicAsset {
+    /// Returns `true` if this asset has expired based on the given current time
+    /// (nanoseconds since UNIX epoch).
+    ///
+    /// An asset without a TTL never expires.
+    pub fn is_expired(&self, now_ns: u64) -> bool {
+        match self.ttl {
+            None => false,
+            Some(ttl) => {
+                let expiry_ns = self.certified_at.saturating_add(ttl.as_nanos() as u64);
+                now_ns >= expiry_ns
+            }
+        }
+    }
+}
 
 // Cache-control values are now configurable via `CacheControl` in `src/config.rs`.
 pub fn certify_all_assets(asset_dir: &Dir<'static>) {
@@ -115,13 +146,13 @@ pub fn delete_assets(asset_paths: Vec<&str>) {
 
 /// Invalidate a single cached dynamic asset by exact path.
 ///
-/// Removes the path from the asset router and from the dynamic paths registry,
+/// Removes the path from the asset router and from the dynamic cache,
 /// then updates the root hash. The next request to this path will trigger an
 /// update call to regenerate the asset.
 ///
-/// Static assets (not in `DYNAMIC_PATHS`) are unaffected.
+/// Static assets (not in `DYNAMIC_CACHE`) are unaffected.
 pub fn invalidate_path(path: &str) {
-    let was_dynamic = DYNAMIC_PATHS.with(|dp| dp.borrow_mut().remove(path));
+    let was_dynamic = DYNAMIC_CACHE.with(|dc| dc.borrow_mut().remove(path).is_some());
     if was_dynamic {
         ASSET_ROUTER.with_borrow_mut(|asset_router| {
             asset_router.delete_assets_by_path(vec![path]);
@@ -136,9 +167,9 @@ pub fn invalidate_path(path: &str) {
 ///
 /// Static assets are unaffected.
 pub fn invalidate_prefix(prefix: &str) {
-    let to_remove: Vec<String> = DYNAMIC_PATHS.with(|dp| {
-        dp.borrow()
-            .iter()
+    let to_remove: Vec<String> = DYNAMIC_CACHE.with(|dc| {
+        dc.borrow()
+            .keys()
             .filter(|p| p.starts_with(prefix))
             .cloned()
             .collect()
@@ -148,10 +179,10 @@ pub fn invalidate_prefix(prefix: &str) {
         return;
     }
 
-    DYNAMIC_PATHS.with(|dp| {
-        let mut set = dp.borrow_mut();
+    DYNAMIC_CACHE.with(|dc| {
+        let mut map = dc.borrow_mut();
         for p in &to_remove {
-            set.remove(p);
+            map.remove(p);
         }
     });
 
@@ -166,9 +197,9 @@ pub fn invalidate_prefix(prefix: &str) {
 ///
 /// Static assets (embedded at compile time) are unaffected.
 pub fn invalidate_all_dynamic() {
-    let all: Vec<String> = DYNAMIC_PATHS.with(|dp| {
-        let mut set = dp.borrow_mut();
-        let paths: Vec<String> = set.drain().collect();
+    let all: Vec<String> = DYNAMIC_CACHE.with(|dc| {
+        let mut map = dc.borrow_mut();
+        let paths: Vec<String> = map.drain().map(|(k, _)| k).collect();
         paths
     });
 
@@ -187,63 +218,71 @@ pub fn invalidate_all_dynamic() {
 ///
 /// This is primarily useful for testing and debugging.
 pub fn is_dynamic_path(path: &str) -> bool {
-    DYNAMIC_PATHS.with(|dp| dp.borrow().contains(path))
+    DYNAMIC_CACHE.with(|dc| dc.borrow().contains_key(path))
 }
 
 /// Returns the number of registered dynamic asset paths.
 ///
 /// This is primarily useful for testing and debugging.
 pub fn dynamic_path_count() -> usize {
-    DYNAMIC_PATHS.with(|dp| dp.borrow().len())
+    DYNAMIC_CACHE.with(|dc| dc.borrow().len())
 }
 
-/// Register a path as a dynamic asset in the internal registry.
+/// Register a path as a dynamic asset in the internal cache.
 ///
 /// This is a low-level operation exposed for testing; normal usage should rely
 /// on `http_request_update` to register dynamic paths automatically.
+///
+/// Inserts a `CachedDynamicAsset` with `certified_at: 0` and `ttl: None`.
 pub fn register_dynamic_path(path: &str) {
-    DYNAMIC_PATHS.with(|dp| {
-        dp.borrow_mut().insert(path.to_string());
+    DYNAMIC_CACHE.with(|dc| {
+        dc.borrow_mut().insert(
+            path.to_string(),
+            CachedDynamicAsset {
+                certified_at: 0,
+                ttl: None,
+            },
+        );
     });
 }
 
-/// Remove a path from the dynamic asset registry *without* touching the
+/// Remove a path from the dynamic asset cache *without* touching the
 /// asset router or certification tree.
 ///
-/// This is the registry-only counterpart of [`invalidate_path`] and exists
+/// This is the cache-only counterpart of [`invalidate_path`] and exists
 /// to allow unit tests that cannot call IC runtime APIs.
 #[cfg(test)]
 fn remove_dynamic_path(path: &str) -> bool {
-    DYNAMIC_PATHS.with(|dp| dp.borrow_mut().remove(path))
+    DYNAMIC_CACHE.with(|dc| dc.borrow_mut().remove(path).is_some())
 }
 
-/// Remove all paths matching a prefix from the dynamic asset registry
+/// Remove all paths matching a prefix from the dynamic asset cache
 /// *without* touching the asset router or certification tree.
 #[cfg(test)]
 fn remove_dynamic_prefix(prefix: &str) -> Vec<String> {
-    let to_remove: Vec<String> = DYNAMIC_PATHS.with(|dp| {
-        dp.borrow()
-            .iter()
+    let to_remove: Vec<String> = DYNAMIC_CACHE.with(|dc| {
+        dc.borrow()
+            .keys()
             .filter(|p| p.starts_with(prefix))
             .cloned()
             .collect()
     });
-    DYNAMIC_PATHS.with(|dp| {
-        let mut set = dp.borrow_mut();
+    DYNAMIC_CACHE.with(|dc| {
+        let mut map = dc.borrow_mut();
         for p in &to_remove {
-            set.remove(p);
+            map.remove(p);
         }
     });
     to_remove
 }
 
-/// Clear all entries from the dynamic asset registry *without* touching the
+/// Clear all entries from the dynamic asset cache *without* touching the
 /// asset router or certification tree.
 #[cfg(test)]
 fn clear_dynamic_paths() -> Vec<String> {
-    DYNAMIC_PATHS.with(|dp| {
-        let mut set = dp.borrow_mut();
-        set.drain().collect()
+    DYNAMIC_CACHE.with(|dc| {
+        let mut map = dc.borrow_mut();
+        map.drain().map(|(k, _)| k).collect()
     })
 }
 
@@ -251,10 +290,10 @@ fn clear_dynamic_paths() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Helper: reset DYNAMIC_PATHS before each test to avoid cross-test leakage
+    /// Helper: reset DYNAMIC_CACHE before each test to avoid cross-test leakage
     /// (thread-local state persists across tests in the same thread).
     fn reset_dynamic_paths() {
-        DYNAMIC_PATHS.with(|dp| dp.borrow_mut().clear());
+        DYNAMIC_CACHE.with(|dc| dc.borrow_mut().clear());
     }
 
     // ---- 4.2.9: invalidate_path removes the path from DYNAMIC_PATHS ----
@@ -324,9 +363,59 @@ mod tests {
         assert!(is_dynamic_path("/posts/1"));
 
         // Also test that invalidate_path with a non-dynamic path doesn't panic
-        // (the real function guards on DYNAMIC_PATHS membership)
+        // (the real function guards on DYNAMIC_CACHE membership)
         invalidate_path("/style.css");
         // No panic, and /posts/1 still registered
         assert!(is_dynamic_path("/posts/1"));
+    }
+
+    // ---- 4.1.17: CachedDynamicAsset with ttl: None never expires ----
+
+    #[test]
+    fn cached_dynamic_asset_no_ttl_never_expires() {
+        let asset = CachedDynamicAsset {
+            certified_at: 1_000_000_000_000_000_000, // 1 second in nanoseconds
+            ttl: None,
+        };
+        // Even far in the future, is_expired returns false
+        assert!(!asset.is_expired(u64::MAX));
+        assert!(!asset.is_expired(0));
+        assert!(!asset.is_expired(asset.certified_at));
+    }
+
+    // ---- 4.1.18: CachedDynamicAsset with expired TTL is detected ----
+
+    #[test]
+    fn cached_dynamic_asset_expired_ttl_detected() {
+        let one_hour_ns: u64 = 3_600_000_000_000; // 3600 seconds in nanoseconds
+        let asset = CachedDynamicAsset {
+            certified_at: 1_000_000_000_000_000_000, // some past time
+            ttl: Some(Duration::from_secs(3600)),
+        };
+        // Time well past the expiry
+        let now_expired = asset.certified_at + one_hour_ns + 1;
+        assert!(asset.is_expired(now_expired));
+
+        // Exactly at expiry boundary
+        let now_at_boundary = asset.certified_at + one_hour_ns;
+        assert!(asset.is_expired(now_at_boundary));
+    }
+
+    // ---- 4.1.19: CachedDynamicAsset with fresh TTL is not expired ----
+
+    #[test]
+    fn cached_dynamic_asset_fresh_ttl_not_expired() {
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        let asset = CachedDynamicAsset {
+            certified_at: 1_000_000_000_000_000_000,
+            ttl: Some(Duration::from_secs(3600)),
+        };
+        // Still within TTL window
+        let now_fresh = asset.certified_at + one_hour_ns - 1;
+        assert!(!asset.is_expired(now_fresh));
+
+        // Immediately after certification
+        assert!(!asset.is_expired(asset.certified_at));
+        assert!(!asset.is_expired(asset.certified_at + 1));
     }
 }
