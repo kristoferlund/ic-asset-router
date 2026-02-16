@@ -2,6 +2,31 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
+/// Reserved filenames that are never registered as route handlers.
+///
+/// These files have special semantics in the file-based routing convention:
+/// - `middleware` — middleware function for the directory and its children
+/// - `not_found` — custom 404 handler for unmatched routes
+///
+/// Files not in this list (including `all`, `index`) are treated as regular
+/// route handlers.
+///
+/// # Escape hatch for reserved name collisions
+///
+/// If you need a route at a path that collides with a reserved filename
+/// (e.g. `/middleware` or `/not_found`), use a differently-named file with a
+/// `#[route(path = "...")]` attribute override:
+///
+/// ```text
+/// // File: src/routes/mw_page.rs
+/// #[route(path = "middleware")]
+/// pub fn get(...) -> HttpResponse { ... }
+/// ```
+///
+/// This registers a route at `/middleware` without conflicting with the
+/// reserved `middleware.rs` convention.
+const RESERVED_FILES: &[&str] = &["middleware", "not_found"];
+
 /// Recognized HTTP method function names and their corresponding `Method` enum variants.
 const METHOD_NAMES: &[(&str, &str)] = &[
     ("get", "Method::GET"),
@@ -279,57 +304,79 @@ fn process_directory(
                 continue;
             }
 
-            // Detect middleware.rs — these are not route files.
-            if stem == "middleware" {
-                children.push("pub mod middleware;\n".to_string());
-                let mw_prefix = if prefix.is_empty() {
-                    "/".to_string()
-                } else {
-                    prefix_to_route_path(&prefix)
-                };
-                let mw_handler_path = if prefix.is_empty() {
-                    "routes::middleware::middleware".to_string()
-                } else {
-                    let parts: Vec<String> = prefix
-                        .split('/')
-                        .filter(|s| !s.is_empty())
-                        .map(|s| sanitize_mod(s))
-                        .collect();
-                    format!("routes::{}::middleware::middleware", parts.join("::"))
-                };
-                middleware_exports.push(MiddlewareExport {
-                    prefix: mw_prefix,
-                    handler_path: mw_handler_path,
-                });
-                continue;
-            }
-
-            // Detect not_found.rs — custom 404 handler, only in the routes root.
-            if stem == "not_found" {
-                children.push("pub mod not_found;\n".to_string());
-                let methods = detect_method_exports(&path);
-                if methods.is_empty() {
-                    panic!(
-                        "not_found.rs does not export any recognized HTTP method functions (get, post, put, etc.). \
-                         It must export at least one."
-                    );
+            // Reserved files are never registered as route handlers.
+            // The RESERVED_FILES constant is the single source of truth.
+            if RESERVED_FILES.contains(&stem) {
+                match stem {
+                    "middleware" => {
+                        children.push("pub mod middleware;\n".to_string());
+                        // Best-effort signature validation: warn if middleware.rs
+                        // doesn't appear to export `pub fn middleware`.
+                        if !has_pub_fn(&path, "middleware") {
+                            println!(
+                                "cargo:warning=middleware.rs in '{}' should export \
+                                 `pub fn middleware(...)`. The generated wiring expects \
+                                 this export and will fail to compile without it.",
+                                dir.display()
+                            );
+                        }
+                        let mw_prefix = if prefix.is_empty() {
+                            "/".to_string()
+                        } else {
+                            prefix_to_route_path(&prefix)
+                        };
+                        let mw_handler_path = if prefix.is_empty() {
+                            "routes::middleware::middleware".to_string()
+                        } else {
+                            let parts: Vec<String> = prefix
+                                .split('/')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| sanitize_mod(s))
+                                .collect();
+                            format!("routes::{}::middleware::middleware", parts.join("::"))
+                        };
+                        middleware_exports.push(MiddlewareExport {
+                            prefix: mw_prefix,
+                            handler_path: mw_handler_path,
+                        });
+                    }
+                    "not_found" => {
+                        children.push("pub mod not_found;\n".to_string());
+                        let methods = detect_method_exports(&path);
+                        if methods.is_empty() {
+                            panic!(
+                                "not_found.rs does not export any recognized HTTP method functions (get, post, put, etc.). \
+                                 It must export at least one."
+                            );
+                        }
+                        // Use the `get` export if available, otherwise the first detected method.
+                        let (fn_name, _) = methods
+                            .iter()
+                            .find(|(name, _)| *name == "get")
+                            .unwrap_or(&methods[0]);
+                        let handler_path = if prefix.is_empty() {
+                            format!("routes::not_found::{fn_name}")
+                        } else {
+                            let parts: Vec<String> = prefix
+                                .split('/')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| sanitize_mod(s))
+                                .collect();
+                            format!("routes::{}::not_found::{fn_name}", parts.join("::"))
+                        };
+                        not_found_exports.push(NotFoundExport { handler_path });
+                    }
+                    _ => {
+                        // Future reserved filenames: skip route registration,
+                        // emit a module declaration, and warn.
+                        children.push(format!("pub mod {stem};\n"));
+                        println!(
+                            "cargo:warning=Reserved file '{stem}.rs' in '{}' was skipped — \
+                             no handler registered for it.",
+                            dir.display()
+                        );
+                    }
                 }
-                // Use the `get` export if available, otherwise the first detected method.
-                let (fn_name, _) = methods
-                    .iter()
-                    .find(|(name, _)| *name == "get")
-                    .unwrap_or(&methods[0]);
-                let handler_path = if prefix.is_empty() {
-                    format!("routes::not_found::{fn_name}")
-                } else {
-                    let parts: Vec<String> = prefix
-                        .split('/')
-                        .filter(|s| !s.is_empty())
-                        .map(|s| sanitize_mod(s))
-                        .collect();
-                    format!("routes::{}::not_found::{fn_name}", parts.join("::"))
-                };
-                not_found_exports.push(NotFoundExport { handler_path });
                 continue;
             }
 
@@ -381,6 +428,25 @@ fn process_directory(
         let mod_path = dir.join("mod.rs");
         fs::write(mod_path, contents).unwrap();
     }
+}
+
+/// Best-effort check: does the file contain `pub fn <name>(`?
+///
+/// Used for signature validation of reserved files (e.g. checking that
+/// `middleware.rs` exports `pub fn middleware`). Not a full parser — just
+/// scans lines for the expected pattern.
+fn has_pub_fn(path: &Path, name: &str) -> bool {
+    let source = fs::read_to_string(path).unwrap_or_default();
+    let pattern = format!("pub fn {name}");
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&pattern) {
+            let rest = &trimmed[pattern.len()..].trim_start();
+            rest.starts_with('(')
+        } else {
+            false
+        }
+    })
 }
 
 /// Scan a Rust source file for `pub fn <method_name>` declarations matching
