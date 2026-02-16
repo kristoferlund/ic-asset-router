@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
 use askama::Template;
-use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
-use router_library::router::RouteParams;
+use ic_http_certification::{HttpResponse, StatusCode};
+use router_library::RouteContext;
 
 use crate::data;
+
+use super::Params;
 
 #[derive(Template)]
 #[template(path = "post.html")]
@@ -15,8 +17,8 @@ struct PostTemplate<'a> {
     post_id: &'a str,
 }
 
-pub fn get(_req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
-    let post_id = params.get("postId").map(|s| s.as_str()).unwrap_or("0");
+pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
+    let post_id = &ctx.params.post_id;
 
     let Some(post) = data::find_post(post_id) else {
         return HttpResponse::builder()

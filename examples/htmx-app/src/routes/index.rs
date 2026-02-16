@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use askama::Template;
-use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
-use router_library::router::RouteParams;
+use ic_http_certification::{HttpResponse, StatusCode};
+use router_library::RouteContext;
 
 use crate::data::{self, Post};
 
@@ -12,7 +12,7 @@ struct IndexTemplate<'a> {
     posts: &'a [Post],
 }
 
-pub fn get(_req: HttpRequest, _params: RouteParams) -> HttpResponse<'static> {
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
     let posts = data::all_posts();
     let template = IndexTemplate { posts };
 

@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
 use askama::Template;
-use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
-use router_library::router::RouteParams;
+use ic_http_certification::{HttpResponse, StatusCode};
+use router_library::RouteContext;
 
 use crate::data::{self, Comment};
+
+use super::Params;
 
 /// HTML fragment — no layout wrapper. Returned as an HTMX partial response.
 #[derive(Template)]
@@ -14,8 +16,8 @@ struct CommentsTemplate {
     post_id: String,
 }
 
-pub fn get(_req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
-    let post_id = params.get("postId").map(|s| s.as_str()).unwrap_or("0");
+pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
+    let post_id = &ctx.params.post_id;
     let comments = data::comments_for_post(post_id);
     let template = CommentsTemplate {
         comments,
@@ -25,14 +27,10 @@ pub fn get(_req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
     render_template(&template)
 }
 
-pub fn post(req: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
-    let post_id = params
-        .get("postId")
-        .map(|s| s.as_str())
-        .unwrap_or("0")
-        .to_string();
+pub fn post(ctx: RouteContext<Params>) -> HttpResponse<'static> {
+    let post_id = ctx.params.post_id.clone();
 
-    let body_str = std::str::from_utf8(req.body()).unwrap_or("");
+    let body_str = std::str::from_utf8(&ctx.body).unwrap_or("");
     let fields = parse_form_urlencoded(body_str);
 
     let author = fields

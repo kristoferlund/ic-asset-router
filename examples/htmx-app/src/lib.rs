@@ -24,6 +24,7 @@ fn setup() {
             static_assets: "public, max-age=31536000, immutable".into(),
             dynamic_assets: "public, no-cache, no-store".into(),
         },
+        cache_config: router_library::CacheConfig::default(),
         custom_headers: vec![],
     });
     router_library::assets::certify_all_assets(&ASSET_DIR);
