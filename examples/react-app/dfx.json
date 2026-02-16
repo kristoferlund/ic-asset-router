@@ -1,0 +1,30 @@
+{
+  "canisters": {
+    "server": {
+      "candid": "server/server.did",
+      "package": "react-app-server",
+      "build": [
+        "pnpm run build",
+        "cargo build --manifest-path server/Cargo.toml --target wasm32-unknown-unknown --release"
+      ],
+      "wasm": "server/target/wasm32-unknown-unknown/release/react_app_server.wasm",
+      "type": "custom",
+      "metadata": [
+        {
+          "name": "candid:service"
+        }
+      ],
+      "declarations": {
+        "bindings": []
+      }
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}
