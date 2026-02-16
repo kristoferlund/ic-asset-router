@@ -169,6 +169,44 @@ pub fn middleware(
 
 Middleware at different directory levels composes automatically — root first, then progressively more specific.
 
+### Catch-all wildcards
+
+Name a file `all.rs` to capture the entire remaining path. The matched tail is available as the `"*"` entry in route params:
+
+```rust
+// src/routes/files/all.rs
+pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
+    let file_path = ctx.params.get("*").unwrap(); // e.g. "docs/intro.md"
+    // ...
+}
+```
+
+A request to `/files/docs/intro.md` matches the wildcard and `ctx.params["*"]` contains `"docs/intro.md"`. See [`examples/custom-404`](examples/custom-404/) for a working example.
+
+### Custom 404 handler
+
+Place a `not_found.rs` file at the routes root (or in a subdirectory) to handle requests that don't match any route. The handler has the same signature as a regular route handler:
+
+```rust
+// src/routes/not_found.rs
+use ic_http_certification::{HttpResponse, StatusCode};
+use ic_asset_router::RouteContext;
+use std::borrow::Cow;
+
+pub fn handler(ctx: RouteContext<()>) -> HttpResponse<'static> {
+    HttpResponse::builder()
+        .with_status_code(StatusCode::NOT_FOUND)
+        .with_headers(vec![(
+            "content-type".to_string(),
+            "text/html; charset=utf-8".to_string(),
+        )])
+        .with_body(Cow::<[u8]>::Owned(b"<h1>Page not found</h1>".to_vec()))
+        .build()
+}
+```
+
+Without a custom `not_found.rs`, the library returns a plain-text 404 response. All 404 responses are certified under a single canonical path to prevent memory growth from bot scans. See [`examples/custom-404`](examples/custom-404/) for a working example.
+
 ### Route attribute override
 
 Use `#[route(path = "...")]` to override the filename-derived segment. Useful for serving content at reserved names like `/middleware`:

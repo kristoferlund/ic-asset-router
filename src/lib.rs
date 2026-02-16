@@ -17,6 +17,10 @@
 //! - **Scoped middleware** — place a `middleware.rs` in any directory to wrap
 //!   all handlers below it. Middleware composes from root to leaf.
 //!   See [`middleware::MiddlewareFn`].
+//! - **Catch-all wildcards** — name a file `all.rs` to capture the remaining
+//!   path. The matched tail is available as `ctx.params["*"]`.
+//! - **Custom 404 handler** — place a `not_found.rs` at the routes root to
+//!   serve a styled error page instead of the default plain-text 404.
 //! - **Security headers** — choose from [`SecurityHeaders::strict`],
 //!   [`SecurityHeaders::permissive`], or [`SecurityHeaders::none`] presets,
 //!   or configure individual headers.
