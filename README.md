@@ -273,6 +273,7 @@ Each example is a complete, deployable ICP canister. Clone the repo and `dfx dep
 | [`security-headers`](examples/security-headers/) | Security header presets: strict, permissive, and custom |
 | [`cache-invalidation`](examples/cache-invalidation/) | TTL-based cache expiry and explicit invalidation |
 | [`custom-404`](examples/custom-404/) | Styled 404 page via `not_found.rs` |
+| [`react-app`](examples/react-app/) | React SPA with TanStack Router/Query, per-route SEO meta tags, and canister API calls |
 
 ## License
 

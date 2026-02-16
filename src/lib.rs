@@ -76,7 +76,9 @@
 //! ```
 //!
 //! See the [`examples/`](https://github.com/kristoferlund/ic-asset-router/tree/main/examples)
-//! directory for complete, deployable canister projects.
+//! directory for complete, deployable canister projects including a
+//! [React SPA](https://github.com/kristoferlund/ic-asset-router/tree/main/examples/react-app)
+//! with TanStack Router/Query and per-route SEO meta tags.
 
 /// Debug logging macro gated behind the `debug-logging` feature flag.
 /// When enabled, expands to `ic_cdk::println!`; otherwise compiles to nothing.
