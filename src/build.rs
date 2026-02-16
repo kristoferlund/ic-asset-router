@@ -107,7 +107,41 @@ fn process_directory(
     middleware_exports: &mut Vec<MiddlewareExport>,
     not_found_exports: &mut Vec<NotFoundExport>,
 ) {
-    let mut mod_file = String::new();
+    // Detect ambiguous routes: a file `_param.rs` and a directory `_param/` in
+    // the same directory both map to the same route segment. This is an error.
+    {
+        let mut file_stems: Vec<String> = Vec::new();
+        let mut dir_names: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if path.is_dir() {
+                    dir_names.push(name);
+                } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if stem != "mod" && stem != "index" {
+                            file_stems.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        for stem in &file_stems {
+            if dir_names.contains(stem) {
+                panic!(
+                    "Ambiguous route: both '{stem}.rs' and '{stem}/index.rs' exist in '{}'. \
+                     Use one form or the other, not both.",
+                    dir.display()
+                );
+            }
+        }
+    }
+
     let mut children = vec![];
 
     for entry in fs::read_dir(dir).unwrap() {
@@ -142,7 +176,7 @@ fn process_directory(
                 let mw_prefix = if prefix.is_empty() {
                     "/".to_string()
                 } else {
-                    prefix.clone()
+                    prefix_to_route_path(&prefix)
                 };
                 let mw_handler_path = if prefix.is_empty() {
                     "routes::middleware::middleware".to_string()
@@ -191,14 +225,27 @@ fn process_directory(
             }
 
             let mod_name = sanitize_mod(stem);
-            let route_path = file_to_route_path(&prefix, stem);
+            // Check for a #[route(path = "...")] attribute override.
+            // If present, use the attribute value as the route segment instead
+            // of the filename-derived segment.
+            let route_path = match scan_route_attribute(&path) {
+                Some(override_segment) => {
+                    // Build route path using the prefix + the override segment
+                    let mut parts: Vec<String> = prefix
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| name_to_route_segment(s))
+                        .collect();
+                    parts.push(override_segment);
+                    format!("/{}", parts.join("/"))
+                }
+                None => file_to_route_path(&prefix, stem),
+            };
             let module_path = file_to_handler_path(&prefix, stem);
 
-            if stem.starts_with(":") || stem == "*" {
-                mod_file.push_str(&format!("#[path = \"./{stem}.rs\"]\npub mod {mod_name};\n"));
-            } else {
-                children.push(format!("pub mod {mod_name};\n"));
-            }
+            // All filenames are valid Rust identifiers with the new naming convention
+            // (_param, all, etc.) — no #[path = "..."] attributes needed.
+            children.push(format!("pub mod {mod_name};\n"));
 
             // Scan the file for recognized method exports
             let methods = detect_method_exports(&path);
@@ -220,11 +267,8 @@ fn process_directory(
         }
     }
 
-    if !mod_file.is_empty() || !children.is_empty() {
-        let mut contents = mod_file;
-        for child in &children {
-            contents.push_str(child);
-        }
+    if !children.is_empty() {
+        let contents: String = children.concat();
         let mod_path = dir.join("mod.rs");
         fs::write(mod_path, contents).unwrap();
     }
@@ -257,27 +301,100 @@ fn detect_method_exports(path: &Path) -> Vec<(&'static str, &'static str)> {
     found
 }
 
+/// Scan a Rust source file for a `#[route(path = "...")]` attribute and return
+/// the override path segment if present.
+///
+/// Uses simple string scanning (no `syn` dependency). Matches patterns like:
+/// - `#[route(path = "ogimage.png")]`
+/// - `#[route( path = "ogimage.png" )]`
+///
+/// Returns `Some("ogimage.png")` if found, `None` otherwise.
+fn scan_route_attribute(path: &Path) -> Option<String> {
+    let source = fs::read_to_string(path).ok()?;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("#[route(") {
+            continue;
+        }
+        // Extract content between `#[route(` and `)]`
+        let after_open = trimmed.strip_prefix("#[route(")?;
+        let inner = after_open.strip_suffix(")]")?;
+        // Look for `path = "..."` within the attribute arguments
+        for arg in inner.split(',') {
+            let arg = arg.trim();
+            if let Some(rest) = arg.strip_prefix("path") {
+                let rest = rest.trim();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+                        let value = &rest[1..rest.len() - 1];
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn sanitize_mod(name: &str) -> String {
-    match name {
-        "*" => "__any".into(),
-        s if s.starts_with(":") => s.trim_start_matches(":").into(),
-        s => s.replace('.', "_"),
+    // With the new naming convention, all filenames are valid Rust identifiers:
+    // - `_param` prefixed names are dynamic segments (already valid identifiers)
+    // - `all` is the catch-all filename (already a valid identifier)
+    // - No more `:param` or `*` filenames
+    name.replace('.', "_")
+}
+
+/// Convert a raw filesystem prefix (e.g. `/_postId/edit`) to a route prefix
+/// (e.g. `/:postId/edit`). Each segment is mapped through `name_to_route_segment`.
+fn prefix_to_route_path(prefix: &str) -> String {
+    let parts: Vec<String> = prefix
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| name_to_route_segment(s))
+        .collect();
+    if parts.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", parts.join("/"))
+    }
+}
+
+/// Convert a filesystem name (file stem or directory name) to its route segment.
+///
+/// - `index` → `""` (maps to the parent directory path)
+/// - `all` → `*` (catch-all wildcard)
+/// - `_param` → `:param` (dynamic segment)
+/// - anything else → literal segment
+fn name_to_route_segment(name: &str) -> String {
+    if name == "index" {
+        String::new()
+    } else if name == "all" {
+        "*".to_string()
+    } else if let Some(param) = name.strip_prefix('_') {
+        format!(":{param}")
+    } else {
+        name.to_string()
     }
 }
 
 fn file_to_route_path(prefix: &str, name: &str) -> String {
-    let mut parts = vec![];
-    if !prefix.is_empty() {
-        parts.push(prefix.to_string());
+    let mut parts: Vec<String> = prefix
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| name_to_route_segment(s))
+        .collect();
+
+    let segment = name_to_route_segment(name);
+    if !segment.is_empty() {
+        parts.push(segment);
     }
-    parts.push(if name == "index" {
-        "".into()
-    } else if name == "*" {
-        "*".into()
+
+    if parts.is_empty() {
+        "/".to_string()
     } else {
-        name.to_string()
-    });
-    parts.join("/").replace("//", "/")
+        format!("/{}", parts.join("/"))
+    }
 }
 
 fn file_to_handler_path(prefix: &str, name: &str) -> String {
