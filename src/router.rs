@@ -18,6 +18,15 @@ pub type RouteParams = HashMap<String, String>;
 /// used by the router's middleware chain and certification pipeline.
 pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
 
+/// Result of matching a path against the route tree (without method dispatch).
+///
+/// Contains references to the handler maps and the extracted route parameters.
+type MatchResult<'a> = (
+    &'a HashMap<Method, HandlerFn>,
+    &'a HashMap<Method, HandlerResultFn>,
+    RouteParams,
+);
+
 /// A route handler that returns [`HandlerResult`] instead of a bare response.
 ///
 /// This variant supports conditional regeneration: the handler can return
@@ -337,26 +346,12 @@ impl RouteNode {
     ///
     /// This performs path-only matching without method dispatch.
     /// For method-aware routing, use [`resolve()`](Self::resolve) instead.
-    pub fn match_path(
-        &self,
-        path: &str,
-    ) -> Option<(
-        &HashMap<Method, HandlerFn>,
-        &HashMap<Method, HandlerResultFn>,
-        RouteParams,
-    )> {
+    pub fn match_path(&self, path: &str) -> Option<MatchResult<'_>> {
         let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         self._match(&segments)
     }
 
-    fn _match(
-        &self,
-        segments: &[&str],
-    ) -> Option<(
-        &HashMap<Method, HandlerFn>,
-        &HashMap<Method, HandlerResultFn>,
-        RouteParams,
-    )> {
+    fn _match(&self, segments: &[&str]) -> Option<MatchResult<'_>> {
         if segments.is_empty() {
             if !self.handlers.is_empty() {
                 return Some((&self.handlers, &self.result_handlers, HashMap::new()));

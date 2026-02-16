@@ -135,8 +135,8 @@ pub fn url_decode(input: &str) -> std::borrow::Cow<'_, str> {
         match b {
             b'+' => bytes.push(b' '),
             b'%' => {
-                let hi = chars.next().and_then(|c| hex_val(c));
-                let lo = chars.next().and_then(|c| hex_val(c));
+                let hi = chars.next().and_then(hex_val);
+                let lo = chars.next().and_then(hex_val);
                 match (hi, lo) {
                     (Some(h), Some(l)) => bytes.push(h << 4 | l),
                     _ => {
@@ -151,7 +151,7 @@ pub fn url_decode(input: &str) -> std::borrow::Cow<'_, str> {
 
     String::from_utf8(bytes)
         .map(std::borrow::Cow::Owned)
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes().to_vec().leak()).into())
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes().to_vec().leak()))
 }
 
 /// Deserialize a URL query string into a typed struct using `serde_urlencoded`.

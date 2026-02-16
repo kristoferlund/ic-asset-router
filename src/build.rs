@@ -250,7 +250,7 @@ pub fn generate_routes_from(dir: &str) {
     }
 
     // At most one not_found handler should be registered (from the root not_found.rs).
-    if not_found_exports.first().is_some() {
+    if !not_found_exports.is_empty() {
         output.push_str("        root.set_not_found(__not_found_handler);\n");
     }
 
@@ -482,7 +482,7 @@ fn process_directory(
                             let parts: Vec<String> = prefix
                                 .split('/')
                                 .filter(|s| !s.is_empty())
-                                .map(|s| sanitize_mod(s))
+                                .map(sanitize_mod)
                                 .collect();
                             format!("routes::{}::middleware::middleware", parts.join("::"))
                         };
@@ -511,7 +511,7 @@ fn process_directory(
                             let parts: Vec<String> = prefix
                                 .split('/')
                                 .filter(|s| !s.is_empty())
-                                .map(|s| sanitize_mod(s))
+                                .map(sanitize_mod)
                                 .collect();
                             format!("routes::{}::not_found::{fn_name}", parts.join("::"))
                         };
@@ -541,7 +541,7 @@ fn process_directory(
                     let mut parts: Vec<String> = prefix
                         .split('/')
                         .filter(|s| !s.is_empty())
-                        .map(|s| name_to_route_segment(s))
+                        .map(name_to_route_segment)
                         .collect();
                     parts.push(override_segment);
                     format!("/{}", parts.join("/"))
@@ -584,7 +584,7 @@ fn process_directory(
                 let parts: Vec<String> = prefix
                     .split('/')
                     .filter(|s| !s.is_empty())
-                    .map(|s| sanitize_mod(s))
+                    .map(sanitize_mod)
                     .collect();
                 if parts.is_empty() {
                     Some("routes::Params".to_string())
@@ -754,7 +754,7 @@ fn camel_to_snake(s: &str) -> String {
         if c.is_uppercase() {
             if i > 0 {
                 let prev_upper = chars[i - 1].is_uppercase();
-                let next_lower = chars.get(i + 1).map_or(false, |nc| nc.is_lowercase());
+                let next_lower = chars.get(i + 1).is_some_and(|nc| nc.is_lowercase());
                 // Insert underscore before this uppercase letter if:
                 // - previous char was lowercase (camelCase boundary), OR
                 // - previous char was uppercase AND next char is lowercase
@@ -785,7 +785,7 @@ fn prefix_to_route_path(prefix: &str) -> String {
     let parts: Vec<String> = prefix
         .split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| name_to_route_segment(s))
+        .map(name_to_route_segment)
         .collect();
     if parts.is_empty() {
         "/".to_string()
@@ -816,7 +816,7 @@ fn file_to_route_path(prefix: &str, name: &str) -> String {
     let mut parts: Vec<String> = prefix
         .split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| name_to_route_segment(s))
+        .map(name_to_route_segment)
         .collect();
 
     let segment = name_to_route_segment(name);

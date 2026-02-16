@@ -32,6 +32,7 @@ impl Default for CacheControl {
 ///
 /// Controls how long dynamically generated assets remain valid before
 /// the library triggers re-generation via an update call.
+#[derive(Default)]
 pub struct CacheConfig {
     /// Default TTL applied to all dynamic assets that don't have an explicit TTL.
     /// `None` means dynamic assets are cached indefinitely (backwards-compatible).
@@ -39,15 +40,6 @@ pub struct CacheConfig {
     /// Per-route TTL overrides. Keys are exact path strings (e.g. `"/posts/1"`).
     /// A per-route TTL takes precedence over `default_ttl`.
     pub per_route_ttl: HashMap<String, Duration>,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            default_ttl: None,
-            per_route_ttl: HashMap::new(),
-        }
-    }
 }
 
 impl CacheConfig {
@@ -289,6 +281,7 @@ impl Default for SecurityHeaders {
 ///     ..AssetConfig::default()
 /// };
 /// ```
+#[derive(Default)]
 pub struct AssetConfig {
     /// Typed security headers. Use a preset ([`SecurityHeaders::strict()`],
     /// [`SecurityHeaders::permissive()`], [`SecurityHeaders::none()`]) or
@@ -306,17 +299,6 @@ pub struct AssetConfig {
     /// If a custom header has the same name as a security header, the custom
     /// header wins (last-write-wins semantics during merging).
     pub custom_headers: Vec<HeaderField>,
-}
-
-impl Default for AssetConfig {
-    fn default() -> Self {
-        Self {
-            security_headers: SecurityHeaders::default(),
-            cache_control: CacheControl::default(),
-            cache_config: CacheConfig::default(),
-            custom_headers: Vec::new(),
-        }
-    }
 }
 
 impl AssetConfig {

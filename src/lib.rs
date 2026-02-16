@@ -330,15 +330,14 @@ pub fn http_request(
                                     .effective_ttl(NOT_FOUND_CANONICAL_PATH)
                             })
                         });
-                        let expired = if let Some(ttl) = effective_ttl {
+                        if let Some(ttl) = effective_ttl {
                             let now_ns = ic_cdk::api::time();
                             let expiry_ns =
                                 entry.certified_at.saturating_add(ttl.as_nanos() as u64);
                             now_ns >= expiry_ns
                         } else {
                             false
-                        };
-                        expired
+                        }
                     })
                 });
 
