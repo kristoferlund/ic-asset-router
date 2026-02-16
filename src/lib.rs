@@ -72,8 +72,9 @@ pub mod middleware;
 pub mod mime;
 pub mod router;
 
-pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix};
+pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
+pub use router::HandlerResult;
 
 thread_local! {
     static HTTP_TREE: Rc<RefCell<HttpCertificationTree>> = Default::default();
@@ -131,7 +132,7 @@ pub fn http_request(
     }
 
     match root_route_node.resolve(&path, &method) {
-        RouteResult::Found(handler, params) => match opts.certify {
+        RouteResult::Found(handler, params, _result_handler) => match opts.certify {
             false => {
                 debug_log!("Serving {} without certification", path);
                 let mut response =
@@ -245,6 +246,50 @@ pub fn http_request(
     }
 }
 
+/// Certify a dynamically generated response and store it in the asset router.
+///
+/// This is the shared certification pipeline used by `http_request_update` for
+/// both standard `HandlerFn` responses and `HandlerResult::Response` values.
+fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
+    let asset = Asset::new(path.to_string(), response.body().to_vec());
+
+    let content_type = extract_content_type(&response);
+
+    let dynamic_cache_control =
+        ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
+    let asset_config = IcAssetConfig::File {
+        path: path.to_string(),
+        content_type: Some(content_type),
+        headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
+        fallback_for: vec![],
+        aliased_by: vec![],
+        encodings: vec![],
+    };
+
+    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+        if let Err(err) = asset_router.certify_assets(vec![asset], vec![asset_config]) {
+            ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+        }
+        certified_data_set(asset_router.root_hash());
+    });
+
+    // Resolve the effective TTL for this path:
+    // per_route_ttl > default_ttl > None (cache forever).
+    let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
+
+    DYNAMIC_CACHE.with(|dc| {
+        dc.borrow_mut().insert(
+            path.to_string(),
+            CachedDynamicAsset {
+                certified_at: ic_cdk::api::time(),
+                ttl: effective_ttl,
+            },
+        );
+    });
+
+    response
+}
+
 /// Match incoming requests to the appropriate handler, generating assets as needed
 /// and certifying them for future requests.
 pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> HttpResponse<'static> {
@@ -258,52 +303,67 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
     let method = req.method().clone();
 
     match root_route_node.resolve(&path, &method) {
-        RouteResult::Found(handler, params) => {
-            let response = root_route_node.execute_with_middleware(&path, handler, req, params);
+        RouteResult::Found(handler, params, result_handler) => {
+            // If a HandlerResultFn is registered, call it first to check for
+            // NotModified. This avoids running the full middleware + certification
+            // pipeline when the handler signals that the content hasn't changed.
+            if let Some(result_fn) = result_handler {
+                let result = result_fn(req.clone(), params.clone());
+                match result {
+                    router::HandlerResult::NotModified => {
+                        debug_log!("handler returned NotModified for {}", path);
 
-            let asset = Asset::new(path.clone(), response.body().to_vec());
+                        // Reset the certified_at timestamp if TTL-based caching
+                        // is active. The content was confirmed fresh, so the TTL
+                        // timer should restart.
+                        DYNAMIC_CACHE.with(|dc| {
+                            let mut cache = dc.borrow_mut();
+                            if let Some(entry) = cache.get_mut(&path) {
+                                if entry.ttl.is_some() {
+                                    entry.certified_at = ic_cdk::api::time();
+                                }
+                            }
+                        });
 
-            let content_type = extract_content_type(&response);
-
-            let dynamic_cache_control =
-                ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
-            let asset_config = IcAssetConfig::File {
-                path: path.to_string(),
-                content_type: Some(content_type),
-                headers: get_asset_headers(vec![(
-                    "cache-control".to_string(),
-                    dynamic_cache_control,
-                )]),
-                fallback_for: vec![],
-                aliased_by: vec![],
-                encodings: vec![],
-            };
-
-            ASSET_ROUTER.with_borrow_mut(|asset_router| {
-                if let Err(err) = asset_router.certify_assets(vec![asset], vec![asset_config]) {
-                    ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+                        // Serve the existing cached response from the asset router.
+                        return ASSET_ROUTER.with_borrow(|asset_router| {
+                            let cert = match data_certificate() {
+                                Some(c) => c,
+                                None => {
+                                    // In an update call, data_certificate() is unavailable.
+                                    // Return the cached body without certification headers.
+                                    // The next query call will attach the valid proof.
+                                    return match asset_router.serve_asset(&[], &req) {
+                                        Ok(resp) => resp,
+                                        Err(_) => error_response(
+                                            500,
+                                            "Internal Server Error: NotModified but no cached asset found",
+                                        ),
+                                    };
+                                }
+                            };
+                            match asset_router.serve_asset(&cert, &req) {
+                                Ok(resp) => resp,
+                                Err(_) => error_response(
+                                    500,
+                                    "Internal Server Error: NotModified but no cached asset found",
+                                ),
+                            }
+                        });
+                    }
+                    router::HandlerResult::Response(response) => {
+                        // Handler produced a new response — proceed with the
+                        // standard certification pipeline below. We use the
+                        // response from the HandlerResultFn directly (middleware
+                        // has already been bypassed for result handlers).
+                        return certify_dynamic_response(response, &path);
+                    }
                 }
-                certified_data_set(asset_router.root_hash());
-            });
+            }
 
-            // Resolve the effective TTL for this path:
-            // per_route_ttl > default_ttl > None (cache forever).
-            // (A future DynamicResponse type may provide a handler-level TTL hint
-            // that would take highest priority.)
-            let effective_ttl =
-                ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path));
-
-            DYNAMIC_CACHE.with(|dc| {
-                dc.borrow_mut().insert(
-                    path.to_string(),
-                    CachedDynamicAsset {
-                        certified_at: ic_cdk::api::time(),
-                        ttl: effective_ttl,
-                    },
-                );
-            });
-
-            response
+            // Standard path: call handler through middleware chain, then certify.
+            let response = root_route_node.execute_with_middleware(&path, handler, req, params);
+            certify_dynamic_response(response, &path)
         }
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
@@ -399,7 +459,7 @@ mod tests {
             .with_url("/no-ct")
             .build();
         match root.resolve("/no-ct", &Method::GET) {
-            RouteResult::Found(handler, params) => {
+            RouteResult::Found(handler, params, _) => {
                 let response = handler(req, params);
                 assert_eq!(response.status_code(), StatusCode::OK);
                 assert_eq!(response.body(), b"no content-type");

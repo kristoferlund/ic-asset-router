@@ -214,6 +214,18 @@ pub fn invalidate_all_dynamic() {
     });
 }
 
+/// Returns the certification timestamp for a cached dynamic asset, if it exists.
+///
+/// Handlers can use this to decide whether regeneration is actually needed:
+/// if the underlying data hasn't changed since `last_certified_at`, the handler
+/// can return `HandlerResult::NotModified` to skip recertification.
+///
+/// Returns `None` if the path is not in the dynamic cache (i.e., it has never
+/// been generated, or has been invalidated).
+pub fn last_certified_at(path: &str) -> Option<u64> {
+    DYNAMIC_CACHE.with(|dc| dc.borrow().get(path).map(|entry| entry.certified_at))
+}
+
 /// Returns `true` if the given path is registered as a dynamic asset.
 ///
 /// This is primarily useful for testing and debugging.
@@ -417,5 +429,108 @@ mod tests {
         // Immediately after certification
         assert!(!asset.is_expired(asset.certified_at));
         assert!(!asset.is_expired(asset.certified_at + 1));
+    }
+
+    // ---- 4.3.12: last_certified_at returns None for uncached paths ----
+
+    #[test]
+    fn last_certified_at_returns_none_for_uncached() {
+        reset_dynamic_paths();
+        assert_eq!(last_certified_at("/nonexistent"), None);
+        assert_eq!(last_certified_at("/posts/1"), None);
+    }
+
+    // ---- 4.3.13: last_certified_at returns Some(timestamp) for cached paths ----
+
+    #[test]
+    fn last_certified_at_returns_some_for_cached() {
+        reset_dynamic_paths();
+        let timestamp = 1_000_000_000_000_000_000u64;
+        DYNAMIC_CACHE.with(|dc| {
+            dc.borrow_mut().insert(
+                "/posts/1".to_string(),
+                CachedDynamicAsset {
+                    certified_at: timestamp,
+                    ttl: None,
+                },
+            );
+        });
+        assert_eq!(last_certified_at("/posts/1"), Some(timestamp));
+        // Different path still returns None
+        assert_eq!(last_certified_at("/posts/2"), None);
+    }
+
+    // ---- 4.3.14: NotModified preserves existing DYNAMIC_CACHE entry ----
+
+    #[test]
+    fn not_modified_preserves_dynamic_cache_entry() {
+        reset_dynamic_paths();
+        let original_time = 1_000_000_000_000_000_000u64;
+
+        // Simulate a cached dynamic asset without TTL
+        DYNAMIC_CACHE.with(|dc| {
+            dc.borrow_mut().insert(
+                "/posts/1".to_string(),
+                CachedDynamicAsset {
+                    certified_at: original_time,
+                    ttl: None,
+                },
+            );
+        });
+
+        // Simulate NotModified behavior (no TTL → certified_at NOT reset):
+        // The http_request_update code only resets certified_at when entry.ttl.is_some().
+        // With ttl: None, the entry is preserved as-is.
+        DYNAMIC_CACHE.with(|dc| {
+            let cache = dc.borrow();
+            let entry = cache.get("/posts/1").expect("entry should exist");
+            assert_eq!(entry.certified_at, original_time);
+            assert!(entry.ttl.is_none());
+        });
+
+        // Verify the path is still in the cache
+        assert!(is_dynamic_path("/posts/1"));
+        assert_eq!(last_certified_at("/posts/1"), Some(original_time));
+    }
+
+    // ---- 4.3.15: NotModified resets certified_at when TTL is active ----
+
+    #[test]
+    fn not_modified_resets_certified_at_with_ttl() {
+        reset_dynamic_paths();
+        let original_time = 1_000_000_000_000_000_000u64;
+        let new_time = 2_000_000_000_000_000_000u64;
+
+        // Insert a cached entry with an active TTL
+        DYNAMIC_CACHE.with(|dc| {
+            dc.borrow_mut().insert(
+                "/posts/1".to_string(),
+                CachedDynamicAsset {
+                    certified_at: original_time,
+                    ttl: Some(Duration::from_secs(3600)),
+                },
+            );
+        });
+
+        // Simulate the NotModified TTL reset logic from http_request_update:
+        // if entry.ttl.is_some(), reset certified_at to the new time.
+        DYNAMIC_CACHE.with(|dc| {
+            let mut cache = dc.borrow_mut();
+            if let Some(entry) = cache.get_mut("/posts/1") {
+                if entry.ttl.is_some() {
+                    entry.certified_at = new_time;
+                }
+            }
+        });
+
+        // Verify the timestamp was reset
+        assert_eq!(last_certified_at("/posts/1"), Some(new_time));
+
+        // Verify the TTL is preserved
+        DYNAMIC_CACHE.with(|dc| {
+            let cache = dc.borrow();
+            let entry = cache.get("/posts/1").expect("entry should exist");
+            assert_eq!(entry.ttl, Some(Duration::from_secs(3600)));
+        });
     }
 }

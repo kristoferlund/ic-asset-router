@@ -6,6 +6,28 @@ use crate::middleware::MiddlewareFn;
 
 pub type RouteParams = HashMap<String, String>;
 pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
+pub type HandlerResultFn = fn(HttpRequest, RouteParams) -> HandlerResult;
+
+/// Result type for route handlers that supports conditional regeneration.
+///
+/// Handlers can return `Response(...)` with a new response to certify, or
+/// `NotModified` to indicate that the existing cached version is still valid.
+/// When `NotModified` is returned, the library skips recertification entirely
+/// and resets the TTL timer if TTL-based caching is active.
+pub enum HandlerResult {
+    /// New content — certify and cache this response.
+    Response(HttpResponse<'static>),
+
+    /// Content hasn't changed — keep the existing certified version
+    /// and reset the TTL timer (if TTL-based caching is enabled).
+    NotModified,
+}
+
+impl From<HttpResponse<'static>> for HandlerResult {
+    fn from(resp: HttpResponse<'static>) -> Self {
+        HandlerResult::Response(resp)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum NodeType {
@@ -17,7 +39,9 @@ pub enum NodeType {
 /// Result of resolving a path + method against the route tree.
 pub enum RouteResult {
     /// A handler was found for the given path and method.
-    Found(HandlerFn, RouteParams),
+    /// The optional `HandlerResultFn` is present when the route supports
+    /// conditional regeneration via `HandlerResult::NotModified`.
+    Found(HandlerFn, RouteParams, Option<HandlerResultFn>),
     /// The path exists but the requested method is not registered.
     /// Contains the list of methods that *are* registered for this path.
     MethodNotAllowed(Vec<Method>),
@@ -29,6 +53,11 @@ pub struct RouteNode {
     pub node_type: NodeType,
     pub children: Vec<RouteNode>,
     pub handlers: HashMap<Method, HandlerFn>,
+    /// Optional `HandlerResultFn` overrides for routes that support conditional
+    /// regeneration. When present for a given method, `http_request_update` calls
+    /// this handler first to check for `NotModified` before falling back to the
+    /// standard `HandlerFn` + middleware pipeline.
+    result_handlers: HashMap<Method, HandlerResultFn>,
     /// Middleware registry stored at the root node.
     /// Each entry is a `(prefix, middleware_fn)` pair, sorted by prefix segment
     /// count (shortest/outermost first). Only the root node's list is used at
@@ -46,6 +75,7 @@ impl RouteNode {
             node_type,
             children: Vec::new(),
             handlers: HashMap::new(),
+            result_handlers: HashMap::new(),
             middlewares: Vec::new(),
             not_found_handler: None,
         }
@@ -92,6 +122,20 @@ impl RouteNode {
         self._insert(&segments, method, handler);
     }
 
+    /// Register a `HandlerResultFn` for the given path and method.
+    ///
+    /// A `HandlerResultFn` returns `HandlerResult` instead of `HttpResponse`,
+    /// enabling conditional regeneration via `HandlerResult::NotModified`.
+    ///
+    /// A standard `HandlerFn` must also be registered at the same path/method
+    /// (via [`insert`](Self::insert)) — it serves as the fallback for the query
+    /// path and middleware chain. The `HandlerResultFn` is only checked in
+    /// `http_request_update`.
+    pub fn insert_result(&mut self, path: &str, method: Method, handler: HandlerResultFn) {
+        let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
+        self._insert_result(&segments, method, handler);
+    }
+
     fn _insert(&mut self, segments: &[&str], method: Method, handler: HandlerFn) {
         if segments.is_empty() {
             self.handlers.insert(method, handler);
@@ -111,6 +155,30 @@ impl RouteNode {
             None => {
                 let mut new_node = RouteNode::new(node_type);
                 new_node._insert(&segments[1..], method, handler);
+                self.children.push(new_node);
+            }
+        }
+    }
+
+    fn _insert_result(&mut self, segments: &[&str], method: Method, handler: HandlerResultFn) {
+        if segments.is_empty() {
+            self.result_handlers.insert(method, handler);
+            return;
+        }
+
+        let node_type = match segments[0] {
+            "*" => NodeType::Wildcard,
+            s if s.starts_with(':') => NodeType::Param(s[1..].to_string()),
+            s => NodeType::Static(s.to_string()),
+        };
+
+        let child = self.children.iter_mut().find(|c| c.node_type == node_type);
+
+        match child {
+            Some(c) => c._insert_result(&segments[1..], method, handler),
+            None => {
+                let mut new_node = RouteNode::new(node_type);
+                new_node._insert_result(&segments[1..], method, handler);
                 self.children.push(new_node);
             }
         }
@@ -171,9 +239,10 @@ impl RouteNode {
     pub fn resolve(&self, path: &str, method: &Method) -> RouteResult {
         let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         match self._match(&segments) {
-            Some((handlers, params)) => {
+            Some((handlers, result_handlers, params)) => {
                 if let Some(&handler) = handlers.get(method) {
-                    RouteResult::Found(handler, params)
+                    let result_handler = result_handlers.get(method).copied();
+                    RouteResult::Found(handler, params, result_handler)
                 } else {
                     let allowed: Vec<Method> = handlers.keys().cloned().collect();
                     RouteResult::MethodNotAllowed(allowed)
@@ -187,15 +256,29 @@ impl RouteNode {
     ///
     /// This performs path-only matching without method dispatch.
     /// For method-aware routing, use [`resolve()`](Self::resolve) instead.
-    pub fn match_path(&self, path: &str) -> Option<(&HashMap<Method, HandlerFn>, RouteParams)> {
+    pub fn match_path(
+        &self,
+        path: &str,
+    ) -> Option<(
+        &HashMap<Method, HandlerFn>,
+        &HashMap<Method, HandlerResultFn>,
+        RouteParams,
+    )> {
         let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         self._match(&segments)
     }
 
-    fn _match(&self, segments: &[&str]) -> Option<(&HashMap<Method, HandlerFn>, RouteParams)> {
+    fn _match(
+        &self,
+        segments: &[&str],
+    ) -> Option<(
+        &HashMap<Method, HandlerFn>,
+        &HashMap<Method, HandlerResultFn>,
+        RouteParams,
+    )> {
         if segments.is_empty() {
             if !self.handlers.is_empty() {
-                return Some((&self.handlers, HashMap::new()));
+                return Some((&self.handlers, &self.result_handlers, HashMap::new()));
             }
             // No handlers on this node — check for a wildcard child (empty wildcard match)
             for child in &self.children {
@@ -203,7 +286,7 @@ impl RouteNode {
                     if !child.handlers.is_empty() {
                         let mut params = HashMap::new();
                         params.insert("*".to_string(), String::new());
-                        return Some((&child.handlers, params));
+                        return Some((&child.handlers, &child.result_handlers, params));
                     }
                 }
             }
@@ -219,9 +302,9 @@ impl RouteNode {
         for child in &self.children {
             if let NodeType::Static(ref s) = child.node_type {
                 if s == head {
-                    if let Some((h, p)) = child._match(tail) {
+                    if let Some((h, rh, p)) = child._match(tail) {
                         debug_log!("Static match: {:?}", segments);
-                        return Some((h, p));
+                        return Some((h, rh, p));
                     }
                 }
             }
@@ -230,10 +313,10 @@ impl RouteNode {
         // Param match
         for child in &self.children {
             if let NodeType::Param(ref name) = child.node_type {
-                if let Some((h, mut p)) = child._match(tail) {
+                if let Some((h, rh, mut p)) = child._match(tail) {
                     p.insert(name.clone(), head.to_string());
                     debug_log!("Param match: {:?}", segments);
-                    return Some((h, p));
+                    return Some((h, rh, p));
                 }
             }
         }
@@ -246,7 +329,7 @@ impl RouteNode {
                     let remaining = segments.join("/");
                     let mut params = HashMap::new();
                     params.insert("*".to_string(), remaining);
-                    return Some((&child.handlers, params));
+                    return Some((&child.handlers, &child.result_handlers, params));
                 }
             }
         }
@@ -329,7 +412,7 @@ mod tests {
     /// Resolve a path as GET and unwrap the Found variant, returning (handler, params).
     fn resolve_get(root: &RouteNode, path: &str) -> (HandlerFn, RouteParams) {
         match root.resolve(path, &Method::GET) {
-            RouteResult::Found(h, p) => (h, p),
+            RouteResult::Found(h, p, _) => (h, p),
             other => panic!(
                 "expected Found for GET {path}, got {}",
                 route_result_name(&other)
@@ -339,7 +422,7 @@ mod tests {
 
     fn route_result_name(r: &RouteResult) -> &'static str {
         match r {
-            RouteResult::Found(_, _) => "Found",
+            RouteResult::Found(_, _, _) => "Found",
             RouteResult::MethodNotAllowed(_) => "MethodNotAllowed",
             RouteResult::NotFound => "NotFound",
         }
@@ -562,7 +645,7 @@ mod tests {
 
         // GET resolves to get handler
         match root.resolve("/api/users", &Method::GET) {
-            RouteResult::Found(handler, params) => {
+            RouteResult::Found(handler, params, _) => {
                 assert_eq!(
                     body_str(handler(test_request("/api/users"), params)),
                     "get_handler"
@@ -573,7 +656,7 @@ mod tests {
 
         // POST resolves to post handler
         match root.resolve("/api/users", &Method::POST) {
-            RouteResult::Found(handler, params) => {
+            RouteResult::Found(handler, params, _) => {
                 let req = HttpRequest::builder()
                     .with_method(Method::POST)
                     .with_url("/api/users")
@@ -637,7 +720,7 @@ mod tests {
         // All 7 methods should resolve to Found
         for method in &methods {
             match root.resolve("/test", method) {
-                RouteResult::Found(_, _) => {}
+                RouteResult::Found(_, _, _) => {}
                 other => panic!(
                     "expected Found for method {}, got {}",
                     method.as_str(),
@@ -919,7 +1002,7 @@ mod tests {
         // Simulate update path (POST)
         clear_log();
         match root.resolve("/api/data", &Method::POST) {
-            RouteResult::Found(handler, params) => {
+            RouteResult::Found(handler, params, _) => {
                 let req = HttpRequest::builder()
                     .with_method(Method::POST)
                     .with_url("/api/data")
@@ -1052,5 +1135,25 @@ mod tests {
             "middleware should wrap the custom 404 handler"
         );
         assert_eq!(body_str(resp), "custom 404");
+    }
+
+    // ---- 4.3.11: From<HttpResponse> for HandlerResult conversion ----
+
+    #[test]
+    fn from_http_response_for_handler_result() {
+        let response = HttpResponse::builder()
+            .with_status_code(StatusCode::OK)
+            .with_body(Cow::Owned(b"hello".to_vec()))
+            .build();
+
+        let result: HandlerResult = response.into();
+
+        match result {
+            HandlerResult::Response(resp) => {
+                assert_eq!(resp.status_code(), StatusCode::OK);
+                assert_eq!(resp.body(), b"hello");
+            }
+            HandlerResult::NotModified => panic!("expected Response, got NotModified"),
+        }
     }
 }
