@@ -389,6 +389,25 @@ fn segment_count(prefix: &str) -> usize {
     prefix.split('/').filter(|s| !s.is_empty()).count()
 }
 
+// Test coverage audit (Session 7, Spec 5.5):
+//
+// Covered:
+//   - Basic path matching: root, static, dynamic, wildcard, nested params, mixed params+wildcard
+//   - Trailing slash normalization, double slash normalization
+//   - Method dispatch: GET/POST differentiation, MethodNotAllowed with allowed list, all 7 methods
+//   - Middleware: root scope, scoped prefix, chain order (root→outer→inner), short-circuit,
+//     response modification, replacement on same prefix, query+update paths
+//   - Custom 404: custom response, default fallback, request pass-through, JSON content-type,
+//     middleware runs before 404
+//   - From<HttpResponse> for HandlerResult conversion
+//
+// Gaps filled in this session:
+//   - Empty segments in paths
+//   - URL-encoded characters in path segments
+//   - Very long paths (100 segments)
+//   - Routes with many (4+) parameters
+//   - Middleware modifying request before handler (header injection)
+//   - Multiple middleware in hierarchy applied to not-found handler
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,5 +1174,413 @@ mod tests {
             }
             HandlerResult::NotModified => panic!("expected Response, got NotModified"),
         }
+    }
+
+    // ---- 5.5.2: Router edge case tests ----
+
+    /// Empty segments in paths are ignored by the trie (split + filter removes them).
+    #[test]
+    fn test_empty_segments_ignored() {
+        let root = setup_router();
+        // Triple slash between segments should still resolve
+        let (handler, _) = resolve_get(&root, "/about///");
+        assert_eq!(
+            body_str(handler(test_request("/about"), HashMap::new())),
+            "about"
+        );
+    }
+
+    /// URL-encoded characters are passed as-is to the trie (the trie does not decode).
+    /// The handler receives the raw URL-encoded segment.
+    #[test]
+    fn test_url_encoded_characters_in_static_path() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        // Register a route with a literal percent-encoded segment.
+        root.insert("/hello%20world", Method::GET, matched_about);
+        let (handler, params) = resolve_get(&root, "/hello%20world");
+        assert_eq!(
+            body_str(handler(test_request("/hello%20world"), params)),
+            "about"
+        );
+    }
+
+    /// URL-encoded characters captured by a param route are preserved as-is.
+    #[test]
+    fn test_url_encoded_characters_in_param() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/posts/:id", Method::GET, matched_deep);
+        let (_, params) = resolve_get(&root, "/posts/hello%20world");
+        assert_eq!(params.get("id").unwrap(), "hello%20world");
+    }
+
+    /// Very long paths (100 segments) are handled without stack overflow or panic.
+    #[test]
+    fn test_very_long_path() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        // Build a path with 100 static segments
+        let segments: Vec<String> = (0..100).map(|i| format!("s{i}")).collect();
+        let path = format!("/{}", segments.join("/"));
+        root.insert(&path, Method::GET, matched_about);
+
+        let (handler, params) = resolve_get(&root, &path);
+        assert_eq!(body_str(handler(test_request(&path), params)), "about");
+    }
+
+    /// Very long path that does not match any route returns NotFound.
+    #[test]
+    fn test_very_long_path_not_found() {
+        let root = RouteNode::new(NodeType::Static("".into()));
+        let segments: Vec<String> = (0..100).map(|i| format!("s{i}")).collect();
+        let path = format!("/{}", segments.join("/"));
+        assert!(matches!(
+            root.resolve(&path, &Method::GET),
+            RouteResult::NotFound
+        ));
+    }
+
+    /// Routes with many (4) dynamic parameters all capture correctly.
+    #[test]
+    fn test_many_parameters() {
+        fn many_param_handler(_: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+            response_with_text(&format!(
+                "{}/{}/{}/{}",
+                params.get("a").unwrap(),
+                params.get("b").unwrap(),
+                params.get("c").unwrap(),
+                params.get("d").unwrap(),
+            ))
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/:a/:b/:c/:d", Method::GET, many_param_handler);
+
+        let (handler, params) = resolve_get(&root, "/w/x/y/z");
+        assert_eq!(params.get("a").unwrap(), "w");
+        assert_eq!(params.get("b").unwrap(), "x");
+        assert_eq!(params.get("c").unwrap(), "y");
+        assert_eq!(params.get("d").unwrap(), "z");
+        assert_eq!(
+            body_str(handler(test_request("/w/x/y/z"), params)),
+            "w/x/y/z"
+        );
+    }
+
+    /// Static route takes precedence over param route for the same segment.
+    #[test]
+    fn test_static_precedence_over_param() {
+        fn static_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("static")
+        }
+        fn param_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("param")
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/items/special", Method::GET, static_handler);
+        root.insert("/items/:id", Method::GET, param_handler);
+
+        // "/items/special" should match the static route
+        let (handler, _) = resolve_get(&root, "/items/special");
+        assert_eq!(
+            body_str(handler(test_request("/items/special"), HashMap::new())),
+            "static"
+        );
+
+        // "/items/other" should match the param route
+        let (handler, params) = resolve_get(&root, "/items/other");
+        assert_eq!(
+            body_str(handler(test_request("/items/other"), params)),
+            "param"
+        );
+    }
+
+    /// Param route takes precedence over wildcard route.
+    #[test]
+    fn test_param_precedence_over_wildcard() {
+        fn param_handler(_: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+            response_with_text(&format!("param:{}", params.get("id").unwrap()))
+        }
+        fn wildcard_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("wildcard")
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/items/:id", Method::GET, param_handler);
+        root.insert("/items/*", Method::GET, wildcard_handler);
+
+        // Single segment after /items/ should match param route
+        let (handler, params) = resolve_get(&root, "/items/42");
+        assert_eq!(
+            body_str(handler(test_request("/items/42"), params.clone())),
+            "param:42"
+        );
+
+        // Multiple segments should match wildcard
+        let (handler, params) = resolve_get(&root, "/items/42/extra");
+        assert_eq!(params.get("*").unwrap(), "42/extra");
+        assert_eq!(
+            body_str(handler(test_request("/items/42/extra"), params)),
+            "wildcard"
+        );
+    }
+
+    /// Root path "/" should not match when only nested routes exist.
+    #[test]
+    fn test_root_not_found_when_only_nested() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/data", Method::GET, matched_about);
+        assert!(matches!(
+            root.resolve("/", &Method::GET),
+            RouteResult::NotFound
+        ));
+    }
+
+    /// insert_result and resolve return the result handler.
+    #[test]
+    fn test_insert_result_and_resolve() {
+        fn handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("ok")
+        }
+        fn result_handler(_: HttpRequest, _: RouteParams) -> HandlerResult {
+            HandlerResult::NotModified
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/test", Method::GET, handler);
+        root.insert_result("/test", Method::GET, result_handler);
+
+        match root.resolve("/test", &Method::GET) {
+            RouteResult::Found(_, _, Some(rh)) => {
+                // Verify the result handler returns NotModified
+                let result = rh(test_request("/test"), HashMap::new());
+                assert!(matches!(result, HandlerResult::NotModified));
+            }
+            RouteResult::Found(_, _, None) => panic!("expected result handler to be present"),
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    /// match_path returns handlers and params without method dispatch.
+    #[test]
+    fn test_match_path_returns_handlers() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/items/:id", Method::GET, matched_get_handler);
+        root.insert("/items/:id", Method::POST, matched_post_handler);
+
+        let (handlers, _, params) = root.match_path("/items/42").expect("should match");
+        assert_eq!(params.get("id").unwrap(), "42");
+        assert!(handlers.contains_key(&Method::GET));
+        assert!(handlers.contains_key(&Method::POST));
+        assert_eq!(handlers.len(), 2);
+    }
+
+    /// match_path returns None for non-existent paths.
+    #[test]
+    fn test_match_path_returns_none() {
+        let root = RouteNode::new(NodeType::Static("".into()));
+        assert!(root.match_path("/nonexistent").is_none());
+    }
+
+    // ---- 5.5.3: Additional middleware chain tests ----
+
+    /// Middleware can modify the request before passing it to the handler.
+    /// The handler sees the modified request (e.g. added headers).
+    #[test]
+    fn test_middleware_modifies_request_before_handler() {
+        fn inject_header_mw(
+            req: HttpRequest,
+            params: &RouteParams,
+            next: &dyn Fn(HttpRequest, &RouteParams) -> HttpResponse<'static>,
+        ) -> HttpResponse<'static> {
+            // Build a new request with an added header.
+            let mut headers = req.headers().to_vec();
+            headers.push(("x-injected".to_string(), "mw-value".to_string()));
+            let modified = HttpRequest::builder()
+                .with_method(req.method().clone())
+                .with_url(req.url())
+                .with_headers(headers)
+                .with_body(req.body().to_vec())
+                .build();
+            next(modified, params)
+        }
+
+        fn header_checking_handler(req: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            let has_header = req
+                .headers()
+                .iter()
+                .any(|(k, v)| k == "x-injected" && v == "mw-value");
+            if has_header {
+                response_with_text("header_present")
+            } else {
+                response_with_text("header_missing")
+            }
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/check", Method::GET, header_checking_handler);
+        root.set_middleware("/", inject_header_mw);
+
+        let (handler, params) = resolve_get(&root, "/check");
+        let resp = root.execute_with_middleware("/check", handler, test_request("/check"), params);
+        assert_eq!(body_str(resp), "header_present");
+    }
+
+    /// Multiple middleware at different hierarchy levels all apply to not-found handler.
+    #[test]
+    fn test_multiple_middleware_on_not_found() {
+        fn nf_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            log_entry("not_found_handler");
+            response_with_text("not found")
+        }
+
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/data", Method::GET, logging_handler);
+        root.set_middleware("/", root_middleware);
+        root.set_middleware("/api", api_middleware);
+        root.set_not_found(nf_handler);
+
+        // Request to /api/missing — both root and /api middleware should fire
+        let resp = root
+            .execute_not_found_with_middleware("/api/missing", test_request("/api/missing"))
+            .expect("expected not-found response");
+
+        let log = get_log();
+        assert_eq!(
+            log,
+            vec![
+                "root_mw_before",
+                "api_mw_before",
+                "not_found_handler",
+                "api_mw_after",
+                "root_mw_after",
+            ],
+            "both root and /api middleware should wrap the not-found handler"
+        );
+        assert_eq!(body_str(resp), "not found");
+    }
+
+    /// Only root middleware applies to not-found for paths outside /api.
+    #[test]
+    fn test_not_found_only_root_middleware_for_non_api() {
+        fn nf_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            log_entry("not_found_handler");
+            response_with_text("not found")
+        }
+
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/data", Method::GET, logging_handler);
+        root.set_middleware("/", root_middleware);
+        root.set_middleware("/api", api_middleware);
+        root.set_not_found(nf_handler);
+
+        // Request to /other/missing — only root middleware, NOT /api middleware
+        let resp = root
+            .execute_not_found_with_middleware("/other/missing", test_request("/other/missing"))
+            .expect("expected not-found response");
+
+        let log = get_log();
+        assert_eq!(
+            log,
+            vec!["root_mw_before", "not_found_handler", "root_mw_after"],
+            "/api middleware should NOT fire for /other/missing"
+        );
+        assert_eq!(body_str(resp), "not found");
+    }
+
+    /// Middleware executes in correct order regardless of the registration order.
+    /// (Ordering is by prefix segment count, not insertion order.)
+    #[test]
+    fn test_middleware_ordering_independent_of_registration_order() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/v2/data", Method::GET, logging_handler);
+
+        // Register in reverse order: inner → outer → root
+        root.set_middleware("/api/v2", api_v2_middleware);
+        root.set_middleware("/api", api_middleware);
+        root.set_middleware("/", root_middleware);
+
+        let (handler, params) = resolve_get(&root, "/api/v2/data");
+        root.execute_with_middleware(
+            "/api/v2/data",
+            handler,
+            test_request("/api/v2/data"),
+            params,
+        );
+
+        let log = get_log();
+        assert_eq!(
+            log,
+            vec![
+                "root_mw_before",
+                "api_mw_before",
+                "api_v2_mw_before",
+                "handler",
+                "api_v2_mw_after",
+                "api_mw_after",
+                "root_mw_after",
+            ],
+            "order should be root→api→api_v2 regardless of registration order"
+        );
+    }
+
+    /// No middleware registered — handler runs directly without wrapping.
+    #[test]
+    fn test_no_middleware_handler_runs_directly() {
+        clear_log();
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/test", Method::GET, logging_handler);
+        // No set_middleware calls
+
+        let (handler, params) = resolve_get(&root, "/test");
+        let resp = root.execute_with_middleware("/test", handler, test_request("/test"), params);
+
+        let log = get_log();
+        assert_eq!(log, vec!["handler"]);
+        assert_eq!(body_str(resp), "handler_response");
+    }
+
+    /// normalize_prefix normalizes various formats to canonical form.
+    #[test]
+    fn test_normalize_prefix_canonical() {
+        assert_eq!(normalize_prefix("/"), "/");
+        assert_eq!(normalize_prefix(""), "/");
+        assert_eq!(normalize_prefix("/api"), "/api");
+        assert_eq!(normalize_prefix("/api/"), "/api");
+        assert_eq!(normalize_prefix("api"), "/api");
+        assert_eq!(normalize_prefix("api/v2/"), "/api/v2");
+    }
+
+    /// segment_count returns correct counts.
+    #[test]
+    fn test_segment_count() {
+        assert_eq!(segment_count("/"), 0);
+        assert_eq!(segment_count("/api"), 1);
+        assert_eq!(segment_count("/api/v2"), 2);
+        assert_eq!(segment_count("/api/v2/data"), 3);
+    }
+
+    /// path_matches_prefix works for various combinations.
+    #[test]
+    fn test_path_matches_prefix() {
+        // Root prefix matches everything
+        assert!(path_matches_prefix("/api/data", "/"));
+        assert!(path_matches_prefix("/", "/"));
+
+        // Exact match
+        assert!(path_matches_prefix("/api", "/api"));
+
+        // Prefix match with separator
+        assert!(path_matches_prefix("/api/data", "/api"));
+        assert!(path_matches_prefix("/api/v2/data", "/api"));
+
+        // Does not match partial segment
+        assert!(!path_matches_prefix("/api-v2", "/api"));
+        assert!(!path_matches_prefix("/apidata", "/api"));
+
+        // No match
+        assert!(!path_matches_prefix("/other", "/api"));
     }
 }

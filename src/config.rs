@@ -303,6 +303,19 @@ impl AssetConfig {
     }
 }
 
+// Test coverage audit (Session 7, Spec 5.5):
+//
+// Covered:
+//   - SecurityHeaders presets: strict (all expected headers), permissive (subset), none (zero)
+//   - Custom header override: custom_headers replaces security header of same name
+//   - Additional headers override both custom and security headers
+//   - Case-insensitive header name matching during merges
+//   - X-XSS-Protection never set by any preset
+//   - Default preset is permissive
+//   - CacheControl defaults and custom values (static and dynamic)
+//   - CacheConfig default (None TTL, empty per-route), per-route TTL overrides default
+//
+// No significant gaps identified for config.rs.
 #[cfg(test)]
 mod tests {
     use super::*;

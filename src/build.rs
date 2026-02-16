@@ -811,6 +811,24 @@ fn file_to_handler_path(prefix: &str, name: &str) -> String {
     format!("routes::{}", parts.join("::"))
 }
 
+// Test coverage audit (Session 7, Spec 5.5):
+//
+// Previously covered:
+//   - camel_to_snake: simple, single word, user_id, multi-word, already snake, acronym, leading upper
+//   - name_to_route_segment: index→"", all→"*", _param→":param", static→literal
+//   - file_to_route_path: index at root, param directory, nested param directory
+//   - has_search_params: detects pub struct, absent, ignores private struct
+//
+// Gaps filled in this session:
+//   - scan_route_attribute: valid attribute, missing attribute, whitespace variations
+//   - detect_method_exports: single method, multiple methods, no methods, near-miss names
+//   - has_pub_fn: present, absent, near-miss names
+//   - sanitize_mod: plain name, dotted name, underscore-prefixed
+//   - prefix_to_route_path: root, single segment, param segment, nested
+//   - file_to_handler_path: root, nested, param directory
+//   - escape_json: plain, backslash, double-quote
+//   - file_to_route_path: all→wildcard, static name
+//   - RESERVED_FILES recognition
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,5 +956,490 @@ struct SearchParams {
 "#,
         );
         assert!(!has_search_params(&path));
+    }
+
+    // --- scan_route_attribute tests ---
+
+    #[test]
+    fn scan_route_attribute_basic() {
+        let path = write_temp_file(
+            "scan_basic.rs",
+            r#"
+#[route(path = "ogimage.png")]
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), Some("ogimage.png".to_string()));
+    }
+
+    #[test]
+    fn scan_route_attribute_with_spaces() {
+        let path = write_temp_file(
+            "scan_spaces.rs",
+            r#"
+#[route( path = "custom-name" )]
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), Some("custom-name".to_string()));
+    }
+
+    #[test]
+    fn scan_route_attribute_missing() {
+        let path = write_temp_file(
+            "scan_missing.rs",
+            r#"
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), None);
+    }
+
+    #[test]
+    fn scan_route_attribute_non_route_attribute() {
+        let path = write_temp_file(
+            "scan_non_route.rs",
+            r#"
+#[derive(Debug)]
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), None);
+    }
+
+    // --- detect_method_exports tests ---
+
+    #[test]
+    fn detect_method_exports_single_get() {
+        let path = write_temp_file(
+            "detect_get.rs",
+            r#"
+pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> { todo!() }
+"#,
+        );
+        let methods = detect_method_exports(&path);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].0, "get");
+        assert_eq!(methods[0].1, "Method::GET");
+    }
+
+    #[test]
+    fn detect_method_exports_multiple() {
+        let path = write_temp_file(
+            "detect_multi.rs",
+            r#"
+pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> { todo!() }
+pub fn post(ctx: RouteContext<()>) -> HttpResponse<'static> { todo!() }
+pub fn delete(ctx: RouteContext<()>) -> HttpResponse<'static> { todo!() }
+"#,
+        );
+        let methods = detect_method_exports(&path);
+        assert_eq!(methods.len(), 3);
+        let names: Vec<&str> = methods.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"get"));
+        assert!(names.contains(&"post"));
+        assert!(names.contains(&"delete"));
+    }
+
+    #[test]
+    fn detect_method_exports_none() {
+        let path = write_temp_file(
+            "detect_none.rs",
+            r#"
+pub fn helper() -> String { todo!() }
+"#,
+        );
+        let methods = detect_method_exports(&path);
+        assert!(methods.is_empty());
+    }
+
+    #[test]
+    fn detect_method_exports_no_false_match() {
+        // `get_user` should not match `get`
+        let path = write_temp_file(
+            "detect_near_miss.rs",
+            r#"
+pub fn get_user(id: u64) -> String { todo!() }
+"#,
+        );
+        let methods = detect_method_exports(&path);
+        assert!(methods.is_empty());
+    }
+
+    #[test]
+    fn detect_method_exports_private_fn_ignored() {
+        // `fn get` without `pub` should not match
+        let path = write_temp_file(
+            "detect_private.rs",
+            r#"
+fn get(ctx: RouteContext<()>) -> HttpResponse<'static> { todo!() }
+"#,
+        );
+        let methods = detect_method_exports(&path);
+        assert!(methods.is_empty());
+    }
+
+    // --- has_pub_fn tests ---
+
+    #[test]
+    fn has_pub_fn_present() {
+        let path = write_temp_file(
+            "hpf_present.rs",
+            r#"
+pub fn middleware(req: HttpRequest, params: &RouteParams, next: &dyn Fn()) -> HttpResponse<'static> {
+    todo!()
+}
+"#,
+        );
+        assert!(has_pub_fn(&path, "middleware"));
+    }
+
+    #[test]
+    fn has_pub_fn_absent() {
+        let path = write_temp_file(
+            "hpf_absent.rs",
+            r#"
+pub fn handler() -> String { todo!() }
+"#,
+        );
+        assert!(!has_pub_fn(&path, "middleware"));
+    }
+
+    #[test]
+    fn has_pub_fn_near_miss() {
+        // `pub fn middleware_v2` should not match `middleware`
+        let path = write_temp_file(
+            "hpf_near_miss.rs",
+            r#"
+pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
+"#,
+        );
+        assert!(!has_pub_fn(&path, "middleware"));
+    }
+
+    // --- sanitize_mod tests ---
+
+    #[test]
+    fn sanitize_mod_plain() {
+        assert_eq!(sanitize_mod("about"), "about");
+    }
+
+    #[test]
+    fn sanitize_mod_dot_replacement() {
+        assert_eq!(sanitize_mod("file.name"), "file_name");
+    }
+
+    #[test]
+    fn sanitize_mod_underscore_prefixed() {
+        assert_eq!(sanitize_mod("_postId"), "_postId");
+    }
+
+    // --- prefix_to_route_path tests ---
+
+    #[test]
+    fn prefix_to_route_path_empty() {
+        assert_eq!(prefix_to_route_path(""), "/");
+    }
+
+    #[test]
+    fn prefix_to_route_path_single() {
+        assert_eq!(prefix_to_route_path("/api"), "/api");
+    }
+
+    #[test]
+    fn prefix_to_route_path_param() {
+        assert_eq!(prefix_to_route_path("/_postId"), "/:postId");
+    }
+
+    #[test]
+    fn prefix_to_route_path_nested() {
+        assert_eq!(
+            prefix_to_route_path("/api/_userId/posts"),
+            "/api/:userId/posts"
+        );
+    }
+
+    // --- file_to_handler_path tests ---
+
+    #[test]
+    fn file_to_handler_path_root() {
+        assert_eq!(file_to_handler_path("", "index"), "routes::index");
+    }
+
+    #[test]
+    fn file_to_handler_path_nested() {
+        assert_eq!(
+            file_to_handler_path("/api/users", "index"),
+            "routes::api::users::index"
+        );
+    }
+
+    #[test]
+    fn file_to_handler_path_param_dir() {
+        assert_eq!(
+            file_to_handler_path("/_postId", "edit"),
+            "routes::_postId::edit"
+        );
+    }
+
+    // --- file_to_route_path additional tests ---
+
+    #[test]
+    fn file_to_route_path_all_wildcard() {
+        assert_eq!(file_to_route_path("/files", "all"), "/files/*");
+    }
+
+    #[test]
+    fn file_to_route_path_static_name() {
+        assert_eq!(file_to_route_path("", "about"), "/about");
+    }
+
+    #[test]
+    fn file_to_route_path_deeply_nested() {
+        assert_eq!(
+            file_to_route_path("/api/v2/_userId/posts", "index"),
+            "/api/v2/:userId/posts"
+        );
+    }
+
+    // --- escape_json tests ---
+
+    #[test]
+    fn escape_json_plain() {
+        assert_eq!(escape_json("hello world"), "hello world");
+    }
+
+    #[test]
+    fn escape_json_backslash() {
+        assert_eq!(escape_json("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn escape_json_quote() {
+        assert_eq!(escape_json(r#"say "hi""#), r#"say \"hi\""#);
+    }
+
+    // --- RESERVED_FILES tests ---
+
+    #[test]
+    fn reserved_files_contains_middleware() {
+        assert!(RESERVED_FILES.contains(&"middleware"));
+    }
+
+    #[test]
+    fn reserved_files_contains_not_found() {
+        assert!(RESERVED_FILES.contains(&"not_found"));
+    }
+
+    #[test]
+    fn reserved_files_does_not_contain_index() {
+        assert!(!RESERVED_FILES.contains(&"index"));
+    }
+
+    #[test]
+    fn reserved_files_does_not_contain_all() {
+        assert!(!RESERVED_FILES.contains(&"all"));
+    }
+
+    // --- process_directory integration tests (using temp dirs) ---
+
+    /// Helper: create a temp directory tree and run process_directory on it.
+    fn setup_temp_routes(structure: &[(&str, &str)]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir()
+            .join("router_library_test")
+            .join(format!("routes_{id}"));
+        if base.exists() {
+            fs::remove_dir_all(&base).unwrap();
+        }
+        fs::create_dir_all(&base).unwrap();
+        for (path, content) in structure {
+            let full = base.join(path);
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&full, content).unwrap();
+        }
+        base
+    }
+
+    #[test]
+    fn process_directory_basic_index() {
+        let dir = setup_temp_routes(&[("index.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].route_path, "/");
+        assert_eq!(exports[0].method_variant, "Method::GET");
+    }
+
+    #[test]
+    fn process_directory_static_route() {
+        let dir = setup_temp_routes(&[("about.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].route_path, "/about");
+    }
+
+    #[test]
+    fn process_directory_param_directory() {
+        let dir = setup_temp_routes(&[("_postId/index.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].route_path, "/:postId");
+        assert!(exports[0].params_type_path.is_some());
+    }
+
+    #[test]
+    fn process_directory_wildcard_all() {
+        let dir = setup_temp_routes(&[("all.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].route_path, "/*");
+    }
+
+    #[test]
+    fn process_directory_middleware_detected() {
+        let dir = setup_temp_routes(&[(
+            "middleware.rs",
+            "pub fn middleware(req: R, params: &P, next: &dyn Fn()) -> R { todo!() }",
+        )]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        // middleware.rs should NOT be registered as a route
+        assert!(exports.is_empty());
+        // But it should be registered as middleware
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].prefix, "/");
+    }
+
+    #[test]
+    fn process_directory_not_found_detected() {
+        let dir = setup_temp_routes(&[("not_found.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        // not_found.rs should NOT be registered as a route
+        assert!(exports.is_empty());
+        // But it should be registered as not-found handler
+        assert_eq!(nf.len(), 1);
+    }
+
+    #[test]
+    fn process_directory_nested_structure() {
+        let dir = setup_temp_routes(&[
+            ("index.rs", "pub fn get() -> () { todo!() }"),
+            ("about.rs", "pub fn get() -> () { todo!() }"),
+            ("posts/_postId/index.rs", "pub fn get() -> () { todo!() }"),
+            (
+                "posts/_postId/edit.rs",
+                "pub fn get() -> () { todo!() }\npub fn post() -> () { todo!() }",
+            ),
+        ]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+
+        let paths: Vec<&str> = exports.iter().map(|e| e.route_path.as_str()).collect();
+        assert!(paths.contains(&"/"));
+        assert!(paths.contains(&"/about"));
+        assert!(paths.contains(&"/posts/:postId"));
+        assert!(paths.contains(&"/posts/:postId/edit"));
+
+        // edit.rs should produce both GET and POST
+        let edit_methods: Vec<&str> = exports
+            .iter()
+            .filter(|e| e.route_path == "/posts/:postId/edit")
+            .map(|e| e.method_variant.as_str())
+            .collect();
+        assert!(edit_methods.contains(&"Method::GET"));
+        assert!(edit_methods.contains(&"Method::POST"));
+    }
+
+    #[test]
+    fn process_directory_route_attribute_override() {
+        let dir = setup_temp_routes(&[(
+            "og_image.rs",
+            "#[route(path = \"ogimage.png\")]\npub fn get() -> () { todo!() }",
+        )]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].route_path, "/ogimage.png");
+    }
+
+    #[test]
+    #[should_panic(expected = "Ambiguous route")]
+    fn process_directory_ambiguous_route_panics() {
+        let dir = setup_temp_routes(&[
+            ("_param.rs", "pub fn get() -> () { todo!() }"),
+            ("_param/index.rs", "pub fn get() -> () { todo!() }"),
+        ]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not export any recognized HTTP method")]
+    fn process_directory_route_without_methods_panics() {
+        let dir = setup_temp_routes(&[("broken.rs", "pub fn helper() -> String { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+    }
+
+    #[test]
+    fn process_directory_empty_dir() {
+        let dir = setup_temp_routes(&[]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert!(exports.is_empty());
+        assert!(mw.is_empty());
+        assert!(nf.is_empty());
+    }
+
+    #[test]
+    fn process_directory_search_params_detected() {
+        let dir = setup_temp_routes(&[(
+            "search.rs",
+            r#"
+use serde::Deserialize;
+#[derive(Deserialize, Default)]
+pub struct SearchParams {
+    pub q: Option<String>,
+}
+pub fn get() -> () { todo!() }
+"#,
+        )]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(&dir, String::new(), &mut exports, &mut mw, &mut nf, &[]);
+        assert_eq!(exports.len(), 1);
+        assert!(exports[0].search_params_type_path.is_some());
     }
 }

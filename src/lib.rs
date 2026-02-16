@@ -382,6 +382,16 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
     }
 }
 
+// Test coverage audit (Session 7, Spec 5.5):
+//
+// Covered:
+//   - Malformed URL → 400 response (both http_request and http_request_update)
+//   - Handler without content-type doesn't panic
+//   - extract_content_type: JSON, HTML, missing (fallback to octet-stream), case-insensitive
+//
+// No significant gaps for unit-testable code. IC runtime-dependent paths
+// (certification, asset serving, TTL upgrade, NotModified flow) require PocketIC
+// E2E tests (spec 5.7).
 #[cfg(test)]
 mod tests {
     use super::*;
