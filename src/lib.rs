@@ -1,23 +1,33 @@
-//! File-based HTTP router and asset certification library for Internet Computer canisters.
+//! Build full-stack web applications on the Internet Computer with file-based
+//! routing conventions familiar from Next.js and SvelteKit — but in Rust,
+//! compiled to a single canister. Drop a handler file into `src/routes/`,
+//! deploy, and your endpoint is live with automatic response certification,
+//! typed parameters, scoped middleware, and configurable security headers.
 //!
-//! This library provides:
+//! # Features
 //!
-//! - **File-based routing** — place handler files in `src/routes/` and the build
-//!   script generates a route tree automatically. Dynamic segments use `_param`
-//!   naming, catch-all routes use `all.rs`.
-//! - **IC response certification** — static and dynamic assets are certified via
-//!   the IC HTTP certification library so that boundary nodes can verify responses.
-//! - **Typed route context** — handlers receive a [`RouteContext<P, S>`] with typed
-//!   path parameters, typed search (query) parameters, headers, body, and URL.
-//! - **Middleware** — scoped middleware functions wrap handler execution for
-//!   cross-cutting concerns (auth, logging, header injection).
-//! - **Security headers** — configurable presets ([`SecurityHeaders::strict`],
-//!   [`SecurityHeaders::permissive`], [`SecurityHeaders::none`]) for standard
-//!   security response headers.
-//! - **Cache control** — configurable `Cache-Control` for static and dynamic
-//!   assets, plus TTL-based cache invalidation for dynamic content.
+//! - **File-based routing** — `src/routes/` maps directly to URL paths.
+//!   Dynamic segments (`_postId/`), catch-all wildcards (`all.rs`), and nested
+//!   directories all work out of the box. See [`build::generate_routes`].
+//! - **IC response certification** — responses are automatically certified so
+//!   boundary nodes can verify them. Static assets and dynamic content are
+//!   handled transparently.
+//! - **Typed route context** — handlers receive a [`RouteContext`] with typed
+//!   path params, typed search params, headers, body, and the full URL.
+//! - **Scoped middleware** — place a `middleware.rs` in any directory to wrap
+//!   all handlers below it. Middleware composes from root to leaf.
+//!   See [`middleware::MiddlewareFn`].
+//! - **Security headers** — choose from [`SecurityHeaders::strict`],
+//!   [`SecurityHeaders::permissive`], or [`SecurityHeaders::none`] presets,
+//!   or configure individual headers.
+//! - **Cache control & TTL** — set `Cache-Control` per asset type, configure
+//!   TTL-based expiry via [`CacheConfig`], and invalidate cached responses
+//!   with [`invalidate_path`], [`invalidate_prefix`], or
+//!   [`invalidate_all_dynamic`].
 //!
-//! # Quick start
+//! # Quick Start
+//!
+//! **1. Build script** — scans `src/routes/` and generates the route tree:
 //!
 //! ```rust,ignore
 //! // build.rs
@@ -26,12 +36,43 @@
 //! }
 //! ```
 //!
+//! **2. Route handler** — a file in `src/routes/` with public `get`, `post`,
+//! etc. functions:
+//!
+//! ```rust,ignore
+//! // src/routes/index.rs
+//! use ic_http_certification::{HttpResponse, StatusCode};
+//! use ic_asset_router::RouteContext;
+//! use std::borrow::Cow;
+//!
+//! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     HttpResponse::builder()
+//!         .with_status_code(StatusCode::OK)
+//!         .with_headers(vec![(
+//!             "content-type".to_string(),
+//!             "text/html; charset=utf-8".to_string(),
+//!         )])
+//!         .with_body(Cow::<[u8]>::Owned(b"<h1>Hello from the IC!</h1>".to_vec()))
+//!         .build()
+//! }
+//! ```
+//!
+//! **3. Canister wiring** — include the generated route tree and expose the
+//! HTTP interface:
+//!
 //! ```rust,ignore
 //! // src/lib.rs
-//! use ic_asset_router::{http_request, http_request_update, set_asset_config, AssetConfig};
+//! mod route_tree {
+//!     include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
+//! }
 //!
-//! include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
+//! fn setup() {
+//!     ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
+//! }
 //! ```
+//!
+//! See the [`examples/`](https://github.com/kristoferlund/ic-asset-router/tree/main/examples)
+//! directory for complete, deployable canister projects.
 
 /// Debug logging macro gated behind the `debug-logging` feature flag.
 /// When enabled, expands to `ic_cdk::println!`; otherwise compiles to nothing.
