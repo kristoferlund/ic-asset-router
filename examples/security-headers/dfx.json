@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "security_headers": {
+      "type": "rust",
+      "package": "security-headers",
+      "candid": "security_headers.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

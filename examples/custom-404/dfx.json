@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "custom_404": {
+      "type": "rust",
+      "package": "custom-404",
+      "candid": "custom_404.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "json_api": {
+      "type": "rust",
+      "package": "json-api",
+      "candid": "json_api.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

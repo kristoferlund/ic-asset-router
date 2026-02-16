@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "cache_invalidation": {
+      "type": "rust",
+      "package": "cache-invalidation",
+      "candid": "cache_invalidation.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

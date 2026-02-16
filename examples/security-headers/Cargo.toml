@@ -1,0 +1,16 @@
+[package]
+name = "security-headers"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.18"
+ic-http-certification = "3.0"
+router_library = { path = "../.." }
+
+[build-dependencies]
+router_library = { path = "../.." }
