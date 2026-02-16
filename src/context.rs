@@ -73,6 +73,12 @@ pub struct RouteContext<P, S = ()> {
     pub body: Vec<u8>,
     /// The full request URL.
     pub url: String,
+    /// The wildcard capture for catch-all routes.
+    ///
+    /// `None` for routes without a wildcard segment.
+    /// `Some("docs/report.pdf")` for a request to `/files/docs/report.pdf`
+    /// matching `/files/*`.
+    pub wildcard: Option<String>,
 }
 
 /// Parse query string key-value pairs from a URL.

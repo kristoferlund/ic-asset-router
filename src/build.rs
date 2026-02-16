@@ -205,6 +205,7 @@ pub fn generate_routes_from(dir: &str) {
         output.push_str("        headers: req.headers().to_vec(),\n");
         output.push_str("        body: req.body().to_vec(),\n");
         output.push_str("        url: req.url().to_string(),\n");
+        output.push_str("        wildcard: raw_params.get(\"*\").cloned(),\n");
         output.push_str("    };\n");
         output.push_str(&format!("    {}(ctx)\n", export.handler_path));
         output.push_str("}\n\n");
@@ -224,6 +225,7 @@ pub fn generate_routes_from(dir: &str) {
         output.push_str("        headers: req.headers().to_vec(),\n");
         output.push_str("        body: req.body().to_vec(),\n");
         output.push_str("        url: req.url().to_string(),\n");
+        output.push_str("        wildcard: None,\n");
         output.push_str("    };\n");
         output.push_str(&format!("    {}(ctx)\n", nf.handler_path));
         output.push_str("}\n\n");
