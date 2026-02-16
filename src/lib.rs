@@ -293,8 +293,56 @@ pub fn http_request(
                     debug_log!("serving static asset for {}", path);
                     return response;
                 }
+
+                // Check DYNAMIC_CACHE for a previously certified 404 response.
+                // If found and not TTL-expired, serve it from the asset router.
+                // Otherwise, upgrade to the update path to run the not-found
+                // handler and certify its response.
+                let ttl_expired = DYNAMIC_CACHE.with(|dc| {
+                    let cache = dc.borrow();
+                    if let Some(entry) = cache.get(&path) {
+                        let effective_ttl = entry.ttl.or_else(|| {
+                            ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path))
+                        });
+                        if let Some(ttl) = effective_ttl {
+                            let now_ns = ic_cdk::api::time();
+                            let expiry_ns =
+                                entry.certified_at.saturating_add(ttl.as_nanos() as u64);
+                            return now_ns >= expiry_ns;
+                        }
+                        // Cached with no TTL — still valid.
+                        return false;
+                    }
+                    // Not in cache at all — treat as "expired" to trigger upgrade.
+                    true
+                });
+
+                if ttl_expired {
+                    debug_log!("upgrading not-found (no cached 404 for {})", path);
+                    return HttpResponse::builder().with_upgrade(true).build();
+                }
+
+                // Serve the cached certified 404 from the asset router.
+                return ASSET_ROUTER.with_borrow(|asset_router| {
+                    let cert = match data_certificate() {
+                        Some(c) => c,
+                        None => {
+                            debug_log!("upgrading not-found (no data certificate)");
+                            return HttpResponse::builder().with_upgrade(true).build();
+                        }
+                    };
+                    if let Ok(response) = asset_router.serve_asset(&cert, &req) {
+                        debug_log!("serving cached 404 for {}", path);
+                        response
+                    } else {
+                        debug_log!("upgrading not-found (serve_asset failed for {})", path);
+                        HttpResponse::builder().with_upgrade(true).build()
+                    }
+                });
             }
 
+            // Non-certified mode: execute the not-found handler directly
+            // without upgrade, same as any other non-certified response.
             if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
                 response
             } else {
@@ -437,7 +485,9 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
         }
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
-            if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
+            let response = if let Some(response) =
+                root_route_node.execute_not_found_with_middleware(&path, req)
+            {
                 response
             } else {
                 HttpResponse::not_found(
@@ -445,7 +495,8 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                     vec![("Content-Type".into(), "text/plain".into())],
                 )
                 .build()
-            }
+            };
+            certify_dynamic_response(response, &path)
         }
     }
 }

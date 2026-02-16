@@ -1,7 +1,7 @@
 You are implementing changes to a Rust library at ~/gh/router_library/.
 
-PLAN FILE: ~/bee/BEE NOTES/Projects/Asset Router/Phase 5/PLAN.md
-SPEC FILES: ~/bee/BEE NOTES/Projects/Asset Router/Phase 5/
+PLAN FILE: ~/bee/BEE NOTES/Projects/Asset Router/Phase 6/PLAN.md
+SPEC FILES: ~/bee/BEE NOTES/Projects/Asset Router/Phase 6/
 
 Instructions:
 1. Read the plan file (PLAN.md).
@@ -14,7 +14,7 @@ Instructions:
 8. Mark completed tasks in PLAN.md (change `[ ]` to `[x]`).
 9. Append a session summary to SESSION.md (in the same directory as PLAN.md).
    The summary must include:
-   - A heading with the session name (e.g., "## Session 3: Spec 5.4 — Reserved Filename Validation")
+   - A heading with the session name (e.g., "## Session 3: Spec 6.2 — Wildcard Value in RouteContext")
    - Date
    - What was accomplished (tasks completed, brief description)
    - Obstacles encountered (compilation errors, test failures, unclear specs, workarounds applied)
@@ -30,6 +30,5 @@ Rules:
 - If `cargo check` or `cargo test` fails and your fix attempt also fails, STOP.
   Mark the failing task with `[!]` in PLAN.md and describe the failure briefly.
   Still commit whatever partial work exists before stopping.
-- Ask before installing new dependencies.
 - Do not modify files outside ~/gh/router_library/ except for PLAN.md and SESSION.md.
 - ALWAYS commit before stopping. Every session must end with a git commit.
