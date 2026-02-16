@@ -1,0 +1,5 @@
+/* Test canister static asset — used by E2E tests to verify static asset serving. */
+body {
+    font-family: system-ui, sans-serif;
+    margin: 2rem;
+}

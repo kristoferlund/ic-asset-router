@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "test_canister": {
+      "type": "rust",
+      "package": "test-canister",
+      "candid": "test_canister.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}
