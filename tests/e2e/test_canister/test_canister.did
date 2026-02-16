@@ -19,4 +19,5 @@ service : {
   http_request_update : (HttpRequest) -> (HttpResponse);
   invalidate : (text) -> ();
   invalidate_all : () -> ();
+  dynamic_cache_count : () -> (nat64) query;
 };

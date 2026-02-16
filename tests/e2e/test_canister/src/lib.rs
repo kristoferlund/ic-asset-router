@@ -71,3 +71,12 @@ fn invalidate(path: String) {
 fn invalidate_all() {
     router_library::invalidate_all_dynamic();
 }
+
+// ---------------------------------------------------------------------------
+// Cache introspection endpoints (for E2E testing)
+// ---------------------------------------------------------------------------
+
+#[query]
+fn dynamic_cache_count() -> u64 {
+    router_library::assets::dynamic_path_count() as u64
+}

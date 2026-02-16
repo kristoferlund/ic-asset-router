@@ -275,8 +275,9 @@ mod tests {
         let (_pic, client, base_url, _cid) = setup();
 
         // First request to an unknown path: triggers the query→update flow.
-        // The update path runs the not-found handler and certifies the 404
-        // response via certify_dynamic_response (spec 6.1).
+        // The update path runs the not-found handler and certifies the response
+        // at the canonical /__not_found path (spec 6.7). The handler produces a
+        // 404 response, and the update path returns it directly to the client.
         let resp1 = client
             .get(url_for(&base_url, "/nonexistent"))
             .send()
@@ -284,7 +285,7 @@ mod tests {
         assert_eq!(
             resp1.status().as_u16(),
             404,
-            "GET /nonexistent should return 404"
+            "first GET /nonexistent should return 404 (from update path)"
         );
         let body1 = resp1.text().unwrap();
         assert!(
@@ -292,7 +293,10 @@ mod tests {
             "custom 404 handler should produce body containing 'custom 404', got: {body1}"
         );
 
-        // Second request: served from the certified cache.
+        // Second request: served from the certified cache via serve_asset().
+        // The /__not_found asset is registered as a fallback for scope "/"
+        // with status_code 404, so serve_asset() returns 404 with the correct
+        // certification proof for the original request path.
         let resp2 = client
             .get(url_for(&base_url, "/nonexistent"))
             .send()
@@ -300,7 +304,7 @@ mod tests {
         assert_eq!(
             resp2.status().as_u16(),
             404,
-            "cached 404 should still return 404"
+            "cached 404 should still return 404 (fallback with status_code 404)"
         );
         assert!(
             resp2.headers().get("ic-certificate").is_some(),
@@ -409,6 +413,61 @@ mod tests {
         assert_ne!(
             body1, body3,
             "response after TTL expiry should have a different timestamp"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 6.7 — Single certified 404 fallback: only one DYNAMIC_CACHE entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_single_404_cache_entry() {
+        let (pic, client, base_url, canister_id) = setup();
+
+        // First: invalidate everything so we start with a known state.
+        pic.update_call(
+            canister_id,
+            Principal::anonymous(),
+            "invalidate_all",
+            candid::encode_args(()).unwrap(),
+        )
+        .expect("invalidate_all should succeed");
+
+        // Request 100 different non-existent paths. Each triggers the
+        // query→update flow, running the not-found handler. Under spec 6.7,
+        // all 404 responses are certified at the single canonical path
+        // /__not_found — so DYNAMIC_CACHE should contain exactly 1 entry
+        // regardless of how many unique 404 paths are requested.
+        for i in 0..100 {
+            let path = format!("/nonexistent-path-{}", i);
+            let resp = client.get(url_for(&base_url, &path)).send().unwrap();
+            // First request for each path goes through update; body should
+            // contain "custom 404".
+            let body = resp.text().unwrap();
+            assert!(
+                body.contains("custom 404"),
+                "response for {} should contain 'custom 404', got: {}",
+                path,
+                body
+            );
+        }
+
+        // Query the canister for the dynamic cache size.
+        let reply = pic
+            .query_call(
+                canister_id,
+                Principal::anonymous(),
+                "dynamic_cache_count",
+                candid::encode_args(()).unwrap(),
+            )
+            .expect("dynamic_cache_count query should succeed");
+
+        let count: u64 =
+            candid::decode_one(&reply).expect("failed to decode dynamic_cache_count response");
+
+        assert_eq!(
+            count, 1,
+            "100 different 404 paths should create exactly 1 DYNAMIC_CACHE entry (at /__not_found), got: {count}"
         );
     }
 }

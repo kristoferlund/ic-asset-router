@@ -48,7 +48,9 @@ macro_rules! debug_log {
 use std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc};
 
 use assets::{get_asset_headers, CachedDynamicAsset};
-use ic_asset_certification::{Asset, AssetConfig as IcAssetConfig, AssetRouter};
+use ic_asset_certification::{
+    Asset, AssetConfig as IcAssetConfig, AssetFallbackConfig, AssetRouter,
+};
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
@@ -323,7 +325,10 @@ pub fn http_request(
                     }
                     Some(false) => {
                         // Cached and valid — serve from AssetRouter using the
-                        // canonical path.
+                        // original request. The /__not_found asset is registered
+                        // as a fallback for scope "/", so serve_asset() will
+                        // match any path that has no exact asset and produce a
+                        // correctly certified response for the original URL.
                         return ASSET_ROUTER.with_borrow(|asset_router| {
                             let cert = match data_certificate() {
                                 Some(c) => c,
@@ -332,9 +337,7 @@ pub fn http_request(
                                     return HttpResponse::builder().with_upgrade(true).build();
                                 }
                             };
-                            let canonical_req =
-                                HttpRequest::get(NOT_FOUND_CANONICAL_PATH.to_string()).build();
-                            if let Ok(response) = asset_router.serve_asset(&cert, &canonical_req) {
+                            if let Ok(response) = asset_router.serve_asset(&cert, &req) {
                                 debug_log!("serving cached not-found for {}", path);
                                 response
                             } else {
@@ -389,6 +392,19 @@ pub fn http_request(
 /// handler's response is certified at the canonical `/__not_found` path so
 /// that only one cache entry exists for all 404s.
 fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
+    certify_dynamic_response_inner(response, path, vec![])
+}
+
+/// Certify a dynamic response with optional fallback configuration.
+///
+/// When `fallback_for` is non-empty, the asset is registered as a fallback
+/// for the given scopes. This is used by the not-found handler to certify
+/// a single `/__not_found` asset that serves as a fallback for all paths.
+fn certify_dynamic_response_inner(
+    response: HttpResponse<'static>,
+    path: &str,
+    fallback_for: Vec<AssetFallbackConfig>,
+) -> HttpResponse<'static> {
     let content_type = extract_content_type(&response);
     let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
 
@@ -399,7 +415,7 @@ fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> Http
         path: path.to_string(),
         content_type: Some(content_type),
         headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
-        fallback_for: vec![],
+        fallback_for,
         aliased_by: vec![],
         encodings: vec![],
     };
@@ -561,7 +577,14 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                 )
                 .build()
             };
-            certify_dynamic_response(response, NOT_FOUND_CANONICAL_PATH)
+            certify_dynamic_response_inner(
+                response,
+                NOT_FOUND_CANONICAL_PATH,
+                vec![AssetFallbackConfig {
+                    scope: "/".to_string(),
+                    status_code: Some(StatusCode::NOT_FOUND),
+                }],
+            )
         }
     }
 }
