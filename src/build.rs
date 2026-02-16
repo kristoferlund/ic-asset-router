@@ -46,6 +46,21 @@ struct MethodExport {
     handler_path: String,
     /// The `Method` variant string (e.g. "Method::GET")
     method_variant: String,
+    /// Accumulated dynamic parameters for this route, in order from outermost
+    /// to innermost. Empty for static routes.
+    params: Vec<ParamMapping>,
+    /// The Rust module path to the `Params` struct for this route (e.g.
+    /// "routes::posts::_postId::Params"). `None` for routes without dynamic segments.
+    params_type_path: Option<String>,
+}
+
+/// Mapping from a route param name to its struct field name.
+#[derive(Clone)]
+struct ParamMapping {
+    /// The route-level parameter name (e.g. "postId" from `:postId`).
+    route_name: String,
+    /// The snake_case field name on the Params struct (e.g. "post_id").
+    field_name: String,
 }
 
 /// A detected middleware file in a route directory.
@@ -110,15 +125,72 @@ pub fn generate_routes_from(dir: &str) {
     let mut output = String::new();
     output.push_str("use crate::routes;\n");
     output.push_str("use ic_http_certification::Method;\n");
-    output.push_str("use router_library::router::{NodeType, RouteNode};\n\n");
+    output.push_str("use router_library::router::{NodeType, RouteNode, RouteParams};\n");
+    output.push_str("use router_library::{RouteContext, parse_query};\n");
+    output.push_str("use ic_http_certification::HttpRequest;\n");
+    output.push_str("use ic_http_certification::HttpResponse;\n\n");
+
+    // Generate wrapper functions for each route handler.
+    // Each wrapper bridges the router's internal (HttpRequest, RouteParams) signature
+    // to the user-facing RouteContext<Params> signature.
+    for (i, export) in exports.iter().enumerate() {
+        let wrapper_name = format!("__route_handler_{i}");
+        output.push_str(&format!(
+            "fn {wrapper_name}(req: HttpRequest, raw_params: RouteParams) -> HttpResponse<'static> {{\n"
+        ));
+
+        if let Some(ref params_path) = export.params_type_path {
+            // Route has dynamic params — construct the typed Params struct.
+            output.push_str(&format!("    let ctx = RouteContext {{\n"));
+            output.push_str(&format!("        params: {params_path} {{\n"));
+            for pm in &export.params {
+                output.push_str(&format!(
+                    "            {}: raw_params.get(\"{}\").cloned().unwrap_or_default(),\n",
+                    pm.field_name, pm.route_name,
+                ));
+            }
+            output.push_str("        },\n");
+        } else {
+            // Static route — use () as the params type.
+            output.push_str("    let ctx = RouteContext {\n");
+            output.push_str("        params: (),\n");
+        }
+
+        output.push_str("        query: parse_query(req.url()),\n");
+        output.push_str("        method: req.method().clone(),\n");
+        output.push_str("        headers: req.headers().to_vec(),\n");
+        output.push_str("        body: req.body().to_vec(),\n");
+        output.push_str("        url: req.url().to_string(),\n");
+        output.push_str("    };\n");
+        output.push_str(&format!("    {}(ctx)\n", export.handler_path));
+        output.push_str("}\n\n");
+    }
+
+    // Generate wrapper function for the not_found handler if present.
+    if let Some(nf) = not_found_exports.first() {
+        output.push_str(
+            "fn __not_found_handler(req: HttpRequest, raw_params: RouteParams) -> HttpResponse<'static> {\n",
+        );
+        output.push_str("    let ctx = RouteContext {\n");
+        output.push_str("        params: (),\n");
+        output.push_str("        query: parse_query(req.url()),\n");
+        output.push_str("        method: req.method().clone(),\n");
+        output.push_str("        headers: req.headers().to_vec(),\n");
+        output.push_str("        body: req.body().to_vec(),\n");
+        output.push_str("        url: req.url().to_string(),\n");
+        output.push_str("    };\n");
+        output.push_str(&format!("    {}(ctx)\n", nf.handler_path));
+        output.push_str("}\n\n");
+    }
+
     output.push_str("thread_local! {\n");
     output.push_str("    pub static ROUTES: RouteNode = {\n");
     output.push_str("        let mut root = RouteNode::new(NodeType::Static(\"\".into()));\n");
 
-    for export in &exports {
+    for (i, export) in exports.iter().enumerate() {
         output.push_str(&format!(
-            "        root.insert(\"{}\", {}, {});\n",
-            export.route_path, export.method_variant, export.handler_path,
+            "        root.insert(\"{}\", {}, __route_handler_{i});\n",
+            export.route_path, export.method_variant,
         ));
     }
 
@@ -130,11 +202,8 @@ pub fn generate_routes_from(dir: &str) {
     }
 
     // At most one not_found handler should be registered (from the root not_found.rs).
-    if let Some(nf) = not_found_exports.first() {
-        output.push_str(&format!(
-            "        root.set_not_found({});\n",
-            nf.handler_path,
-        ));
+    if not_found_exports.first().is_some() {
+        output.push_str("        root.set_not_found(__not_found_handler);\n");
     }
 
     output.push_str("        root\n    };\n}\n");
@@ -442,11 +511,38 @@ fn process_directory(
                 );
             }
 
+            // Build params info for RouteContext wiring.
+            let param_mappings: Vec<ParamMapping> = accumulated_params
+                .iter()
+                .map(|p| ParamMapping {
+                    route_name: p.route_name.clone(),
+                    field_name: p.field_name.clone(),
+                })
+                .collect();
+            let params_type_path = if param_mappings.is_empty() {
+                None
+            } else {
+                // The Params struct lives in the mod.rs of the directory that
+                // contains this file. Build the module path from the prefix.
+                let parts: Vec<String> = prefix
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| sanitize_mod(s))
+                    .collect();
+                if parts.is_empty() {
+                    Some("routes::Params".to_string())
+                } else {
+                    Some(format!("routes::{}::Params", parts.join("::")))
+                }
+            };
+
             for (fn_name, variant) in &methods {
                 exports.push(MethodExport {
                     route_path: route_path.clone(),
                     handler_path: format!("{}::{}", module_path, fn_name),
                     method_variant: variant.to_string(),
+                    params: param_mappings.clone(),
+                    params_type_path: params_type_path.clone(),
                 });
             }
         }
