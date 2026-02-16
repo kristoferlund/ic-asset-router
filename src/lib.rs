@@ -68,12 +68,14 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
 pub mod assets;
 pub mod build;
 pub mod config;
+pub mod context;
 pub mod middleware;
 pub mod mime;
 pub mod router;
 
 pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
+pub use context::{parse_query, QueryParams, RouteContext};
 pub use router::HandlerResult;
 
 thread_local! {
