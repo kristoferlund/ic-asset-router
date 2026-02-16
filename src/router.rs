@@ -483,7 +483,7 @@ mod tests {
     use ic_http_certification::{Method, StatusCode};
     use std::{borrow::Cow, str};
 
-    fn test_request(path: &str) -> HttpRequest {
+    fn test_request(path: &str) -> HttpRequest<'_> {
         HttpRequest::builder()
             .with_method(Method::GET)
             .with_url(path)

@@ -138,12 +138,18 @@ pub fn generate_routes_from(dir: &str) {
     middleware_exports.sort_by(|a, b| a.prefix.cmp(&b.prefix));
 
     let mut output = String::new();
+    output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use crate::routes;\n");
+    output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::Method;\n");
+    output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use router_library::router::{NodeType, RouteNode, RouteParams};\n");
+    output.push_str("#[allow(unused_imports)]\n");
     output
         .push_str("use router_library::{RouteContext, parse_query, deserialize_search_params};\n");
+    output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::HttpRequest;\n");
+    output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::HttpResponse;\n");
     output.push('\n');
 
@@ -152,6 +158,7 @@ pub fn generate_routes_from(dir: &str) {
     // to the user-facing RouteContext<Params, SearchParams> signature.
     for (i, export) in exports.iter().enumerate() {
         let wrapper_name = format!("__route_handler_{i}");
+        output.push_str("#[allow(unused_variables)]\n");
         output.push_str(&format!(
             "fn {wrapper_name}(req: HttpRequest, raw_params: RouteParams) -> HttpResponse<'static> {{\n"
         ));
@@ -205,6 +212,7 @@ pub fn generate_routes_from(dir: &str) {
 
     // Generate wrapper function for the not_found handler if present.
     if let Some(nf) = not_found_exports.first() {
+        output.push_str("#[allow(unused_variables)]\n");
         output.push_str(
             "fn __not_found_handler(req: HttpRequest, raw_params: RouteParams) -> HttpResponse<'static> {\n",
         );
@@ -433,7 +441,12 @@ fn process_directory(
                 not_found_exports,
                 &child_params,
             );
-            children.push(format!("pub mod {};\n", sanitize_mod(name)));
+            let mod_name = sanitize_mod(name);
+            if mod_name.starts_with('_') {
+                children.push(format!("#[allow(non_snake_case)]\npub mod {mod_name};\n"));
+            } else {
+                children.push(format!("pub mod {mod_name};\n"));
+            }
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             let stem = path.file_stem().unwrap().to_str().unwrap();
             if stem == "mod" {
@@ -537,7 +550,11 @@ fn process_directory(
 
             // All filenames are valid Rust identifiers with the new naming convention
             // (_param, all, etc.) — no #[path = "..."] attributes needed.
-            children.push(format!("pub mod {mod_name};\n"));
+            if mod_name.starts_with('_') {
+                children.push(format!("#[allow(non_snake_case)]\npub mod {mod_name};\n"));
+            } else {
+                children.push(format!("pub mod {mod_name};\n"));
+            }
 
             // Scan the file for recognized method exports
             let methods = detect_method_exports(&path);
