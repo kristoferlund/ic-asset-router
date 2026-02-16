@@ -18,6 +18,26 @@ pub struct CachedDynamicAsset {
     /// Optional time-to-live. If `None`, the asset is cached indefinitely
     /// (backwards-compatible with pre-TTL behavior).
     pub ttl: Option<Duration>,
+    /// The original HTTP status code of the response. For regular dynamic
+    /// routes this is typically 200; for not-found responses it is 404
+    /// (or whatever the custom handler returned).
+    pub status_code: u16,
+    /// Pre-built response for non-200 assets. These are certified directly
+    /// in `HTTP_TREE` (bypassing `AssetRouter`) because `serve_asset()` always
+    /// returns 200 and `certify_assets` doesn't support custom status codes
+    /// for exact-path files. `None` for regular 200 responses, which go
+    /// through `AssetRouter` as before.
+    pub cached_response: Option<CachedHttpResponse>,
+}
+
+/// Stored response data for non-200 certified responses.
+/// The `ic-certificate` header is not included here — it is added at
+/// serve time using a fresh witness from the certification tree.
+#[derive(Clone)]
+pub struct CachedHttpResponse {
+    pub status_code: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 
 impl CachedDynamicAsset {
@@ -35,6 +55,8 @@ impl CachedDynamicAsset {
     /// let asset = CachedDynamicAsset {
     ///     certified_at: 1_000_000_000_000_000_000,
     ///     ttl: Some(Duration::from_secs(3600)),
+    ///     status_code: 200,
+    ///     cached_response: None,
     /// };
     ///
     /// // One hour later (in nanoseconds):
@@ -320,7 +342,8 @@ pub fn dynamic_path_count() -> usize {
 /// This is a low-level operation exposed for testing; normal usage should rely
 /// on `http_request_update` to register dynamic paths automatically.
 ///
-/// Inserts a `CachedDynamicAsset` with `certified_at: 0` and `ttl: None`.
+/// Inserts a `CachedDynamicAsset` with `certified_at: 0`, `ttl: None`, and
+/// `status_code: 200`.
 pub fn register_dynamic_path(path: &str) {
     DYNAMIC_CACHE.with(|dc| {
         dc.borrow_mut().insert(
@@ -328,6 +351,8 @@ pub fn register_dynamic_path(path: &str) {
             CachedDynamicAsset {
                 certified_at: 0,
                 ttl: None,
+                status_code: 200,
+                cached_response: None,
             },
         );
     });
@@ -463,6 +488,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: 1_000_000_000_000_000_000, // 1 second in nanoseconds
             ttl: None,
+            status_code: 200,
+            cached_response: None,
         };
         // Even far in the future, is_expired returns false
         assert!(!asset.is_expired(u64::MAX));
@@ -478,6 +505,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: 1_000_000_000_000_000_000, // some past time
             ttl: Some(Duration::from_secs(3600)),
+            status_code: 200,
+            cached_response: None,
         };
         // Time well past the expiry
         let now_expired = asset.certified_at + one_hour_ns + 1;
@@ -496,6 +525,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: 1_000_000_000_000_000_000,
             ttl: Some(Duration::from_secs(3600)),
+            status_code: 200,
+            cached_response: None,
         };
         // Still within TTL window
         let now_fresh = asset.certified_at + one_hour_ns - 1;
@@ -527,6 +558,8 @@ mod tests {
                 CachedDynamicAsset {
                     certified_at: timestamp,
                     ttl: None,
+                    status_code: 200,
+                    cached_response: None,
                 },
             );
         });
@@ -549,6 +582,8 @@ mod tests {
                 CachedDynamicAsset {
                     certified_at: original_time,
                     ttl: None,
+                    status_code: 200,
+                    cached_response: None,
                 },
             );
         });
@@ -625,6 +660,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: 1_000_000_000_000_000_000,
             ttl: Some(Duration::from_secs(3600)),
+            status_code: 200,
+            cached_response: None,
         };
         let now = asset.certified_at + one_hour_ns - 1;
         assert!(
@@ -639,6 +676,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: u64::MAX - 1000,
             ttl: Some(Duration::from_secs(3600)),
+            status_code: 200,
+            cached_response: None,
         };
         // saturating_add should clamp to u64::MAX, not wrap
         // Any now < u64::MAX should not panic
@@ -654,6 +693,8 @@ mod tests {
         let asset = CachedDynamicAsset {
             certified_at: 1_000_000_000_000_000_000,
             ttl: Some(Duration::from_secs(0)),
+            status_code: 200,
+            cached_response: None,
         };
         // At the exact certified_at time, 0 TTL means already expired.
         assert!(asset.is_expired(asset.certified_at));
@@ -675,6 +716,8 @@ mod tests {
                 CachedDynamicAsset {
                     certified_at: original_time,
                     ttl: Some(Duration::from_secs(3600)),
+                    status_code: 200,
+                    cached_response: None,
                 },
             );
         });

@@ -15,7 +15,16 @@ static ASSET_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    router_library::set_asset_config(router_library::AssetConfig::default());
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    router_library::set_asset_config(router_library::AssetConfig {
+        cache_config: router_library::CacheConfig {
+            default_ttl: None,
+            per_route_ttl: HashMap::from([("/ttl_test".to_string(), Duration::from_secs(5))]),
+        },
+        ..router_library::AssetConfig::default()
+    });
     router_library::assets::certify_all_assets(&ASSET_DIR);
 }
 
@@ -47,4 +56,18 @@ fn http_request(req: HttpRequest) -> HttpResponse<'static> {
 #[update]
 fn http_request_update(req: HttpRequest) -> HttpResponse<'static> {
     route_tree::ROUTES.with(|routes| router_library::http_request_update(req, routes))
+}
+
+// ---------------------------------------------------------------------------
+// Cache invalidation endpoints (for E2E testing)
+// ---------------------------------------------------------------------------
+
+#[update]
+fn invalidate(path: String) {
+    router_library::invalidate_path(&path);
+}
+
+#[update]
+fn invalidate_all() {
+    router_library::invalidate_all_dynamic();
 }

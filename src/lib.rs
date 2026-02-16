@@ -51,9 +51,9 @@ use assets::{get_asset_headers, CachedDynamicAsset};
 use ic_asset_certification::{Asset, AssetConfig as IcAssetConfig, AssetRouter};
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
-    utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
-    HttpCertificationTree, HttpCertificationTreeEntry, HttpRequest, HttpResponse, Method,
-    StatusCode,
+    utils::add_v2_certificate_header, DefaultCelBuilder, DefaultResponseCertification,
+    HttpCertification, HttpCertificationPath, HttpCertificationTree, HttpCertificationTreeEntry,
+    HttpRequest, HttpResponse, Method, StatusCode, CERTIFICATE_EXPRESSION_HEADER_NAME,
 };
 use router::{RouteNode, RouteResult};
 
@@ -283,62 +283,77 @@ pub fn http_request(
         },
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
-            // Try serving a certified static asset before returning 404.
             if opts.certify {
-                let maybe_asset = ASSET_ROUTER.with_borrow(|asset_router| {
-                    let cert = data_certificate()?;
-                    asset_router.serve_asset(&cert, &req).ok()
-                });
-                if let Some(response) = maybe_asset {
-                    debug_log!("serving static asset for {}", path);
-                    return response;
-                }
-
-                // Check DYNAMIC_CACHE for a previously certified 404 response.
-                // If found and not TTL-expired, serve it from the asset router.
-                // Otherwise, upgrade to the update path to run the not-found
-                // handler and certify its response.
-                let ttl_expired = DYNAMIC_CACHE.with(|dc| {
+                // Check DYNAMIC_CACHE for a previously certified not-found
+                // response. Non-200 responses are certified directly in
+                // HTTP_TREE (not AssetRouter), so we must serve them from
+                // the cache before falling through to serve_asset.
+                let cache_state = DYNAMIC_CACHE.with(|dc| {
                     let cache = dc.borrow();
-                    if let Some(entry) = cache.get(&path) {
+                    cache.get(&path).map(|entry| {
                         let effective_ttl = entry.ttl.or_else(|| {
                             ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path))
                         });
-                        if let Some(ttl) = effective_ttl {
+                        let expired = if let Some(ttl) = effective_ttl {
                             let now_ns = ic_cdk::api::time();
                             let expiry_ns =
                                 entry.certified_at.saturating_add(ttl.as_nanos() as u64);
-                            return now_ns >= expiry_ns;
-                        }
-                        // Cached with no TTL — still valid.
-                        return false;
-                    }
-                    // Not in cache at all — treat as "expired" to trigger upgrade.
-                    true
+                            now_ns >= expiry_ns
+                        } else {
+                            false
+                        };
+                        (expired, entry.cached_response.clone())
+                    })
                 });
 
-                if ttl_expired {
-                    debug_log!("upgrading not-found (no cached 404 for {})", path);
-                    return HttpResponse::builder().with_upgrade(true).build();
+                match cache_state {
+                    Some((true, _)) => {
+                        // Cached but TTL-expired — upgrade to regenerate.
+                        debug_log!("upgrading not-found (TTL expired for {})", path);
+                        return HttpResponse::builder().with_upgrade(true).build();
+                    }
+                    Some((false, Some(cached))) => {
+                        // Non-200 cached response — serve it directly with
+                        // a fresh witness from HTTP_TREE.
+                        return serve_cached_non200(&path, cached);
+                    }
+                    Some((false, None)) => {
+                        // 200 response cached via AssetRouter — serve it.
+                        return ASSET_ROUTER.with_borrow(|asset_router| {
+                            let cert = match data_certificate() {
+                                Some(c) => c,
+                                None => {
+                                    debug_log!("upgrading not-found (no data certificate)");
+                                    return HttpResponse::builder().with_upgrade(true).build();
+                                }
+                            };
+                            if let Ok(response) = asset_router.serve_asset(&cert, &req) {
+                                debug_log!("serving cached not-found for {}", path);
+                                response
+                            } else {
+                                debug_log!("upgrading not-found (serve_asset failed for {})", path);
+                                HttpResponse::builder().with_upgrade(true).build()
+                            }
+                        });
+                    }
+                    None => {
+                        // Not in dynamic cache. Try serving a static asset
+                        // before triggering the update path.
+                        let maybe_asset = ASSET_ROUTER.with_borrow(|asset_router| {
+                            let cert = data_certificate()?;
+                            asset_router.serve_asset(&cert, &req).ok()
+                        });
+                        if let Some(response) = maybe_asset {
+                            debug_log!("serving static asset for {}", path);
+                            return response;
+                        }
+
+                        // No cached response at all — upgrade to run the
+                        // not-found handler.
+                        debug_log!("upgrading not-found (no cached entry for {})", path);
+                        return HttpResponse::builder().with_upgrade(true).build();
+                    }
                 }
-
-                // Serve the cached certified 404 from the asset router.
-                return ASSET_ROUTER.with_borrow(|asset_router| {
-                    let cert = match data_certificate() {
-                        Some(c) => c,
-                        None => {
-                            debug_log!("upgrading not-found (no data certificate)");
-                            return HttpResponse::builder().with_upgrade(true).build();
-                        }
-                    };
-                    if let Ok(response) = asset_router.serve_asset(&cert, &req) {
-                        debug_log!("serving cached 404 for {}", path);
-                        response
-                    } else {
-                        debug_log!("upgrading not-found (serve_asset failed for {})", path);
-                        HttpResponse::builder().with_upgrade(true).build()
-                    }
-                });
             }
 
             // Non-certified mode: execute the not-found handler directly
@@ -356,36 +371,163 @@ pub fn http_request(
     }
 }
 
-/// Certify a dynamically generated response and store it in the asset router.
+/// Serve a non-200 response that was manually certified into `HTTP_TREE`.
 ///
-/// This is the shared certification pipeline used by `http_request_update` for
-/// both standard `HandlerFn` responses and `HandlerResult::Response` values.
-fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
-    let asset = Asset::new(path.to_string(), response.body().to_vec());
-
-    let content_type = extract_content_type(&response);
-
-    let dynamic_cache_control =
-        ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
-    let asset_config = IcAssetConfig::File {
-        path: path.to_string(),
-        content_type: Some(content_type),
-        headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
-        fallback_for: vec![],
-        aliased_by: vec![],
-        encodings: vec![],
+/// Reconstructs the response from the cached data and adds the v2 certificate
+/// header using a fresh witness from the tree.
+fn serve_cached_non200(path: &str, cached: assets::CachedHttpResponse) -> HttpResponse<'static> {
+    let cert = match data_certificate() {
+        Some(c) => c,
+        None => {
+            debug_log!("upgrading (no data certificate for cached non-200)");
+            return HttpResponse::builder().with_upgrade(true).build();
+        }
     };
 
-    ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        if let Err(err) = asset_router.certify_assets(vec![asset], vec![asset_config]) {
-            ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
-        }
-        certified_data_set(asset_router.root_hash());
-    });
+    let status =
+        StatusCode::from_u16(cached.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = HttpResponse::builder()
+        .with_status_code(status)
+        .with_headers(cached.headers)
+        .with_body(Cow::Owned(cached.body))
+        .build();
 
-    // Resolve the effective TTL for this path:
-    // per_route_ttl > default_ttl > None (cache forever).
+    // Add the certification proof header.
+    let tree_path = HttpCertificationPath::exact(path);
+    let cel_expr = DefaultCelBuilder::full_certification()
+        .with_response_certification(DefaultResponseCertification::response_header_exclusions(
+            vec![],
+        ))
+        .build();
+    let certification = match HttpCertification::full(
+        &cel_expr,
+        &HttpRequest::get(path.to_string()).build(),
+        &response,
+        None,
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            debug_log!("upgrading (certification failed for cached non-200)");
+            return HttpResponse::builder().with_upgrade(true).build();
+        }
+    };
+    let tree_entry = HttpCertificationTreeEntry::new(&tree_path, certification);
+
+    HTTP_TREE.with(|tree| {
+        let tree = tree.borrow();
+        match tree.witness(&tree_entry, path) {
+            Ok(witness) => {
+                add_v2_certificate_header(
+                    &cert,
+                    &mut response,
+                    &witness,
+                    &tree_path.to_expr_path(),
+                );
+                debug_log!("serving cached non-200 for {}", path);
+                response
+            }
+            Err(_) => {
+                debug_log!("upgrading (witness failed for cached non-200 {})", path);
+                HttpResponse::builder().with_upgrade(true).build()
+            }
+        }
+    })
+}
+
+/// Certify a dynamically generated response and store it for future query-path
+/// serving.
+///
+/// For **200** responses the body is stored in the `AssetRouter` via
+/// `certify_assets`, which lets the query path use `serve_asset()`.
+///
+/// For **non-200** responses (e.g. 404 from a not-found handler) we cannot use
+/// `certify_assets` because `AssetConfig::File` always certifies with status
+/// 200.  Instead we manually build the CEL expression, certification, and tree
+/// entry and insert them directly into `HTTP_TREE`.  The pre-built response
+/// (including all certified headers) is stored in `CachedDynamicAsset` so the
+/// query path can serve it with a fresh witness.
+fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
+    let content_type = extract_content_type(&response);
+    let status_code = response.status_code().as_u16();
     let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
+
+    let cached_response = if status_code == 200 {
+        // ---- Standard 200 path: use AssetRouter ----
+        let asset = Asset::new(path.to_string(), response.body().to_vec());
+        let dynamic_cache_control =
+            ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
+        let asset_config = IcAssetConfig::File {
+            path: path.to_string(),
+            content_type: Some(content_type),
+            headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
+            fallback_for: vec![],
+            aliased_by: vec![],
+            encodings: vec![],
+        };
+
+        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+            if let Err(err) = asset_router.certify_assets(vec![asset], vec![asset_config]) {
+                ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+            }
+            certified_data_set(asset_router.root_hash());
+        });
+
+        None
+    } else {
+        // ---- Non-200 path: manual certification into HTTP_TREE ----
+        let dynamic_cache_control =
+            ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
+
+        let mut headers: Vec<(String, String)> = vec![
+            (
+                "content-length".to_string(),
+                response.body().len().to_string(),
+            ),
+            ("content-type".to_string(), content_type),
+            ("cache-control".to_string(), dynamic_cache_control),
+        ];
+        headers.extend(get_asset_headers(vec![]));
+
+        let cel_expr = DefaultCelBuilder::full_certification()
+            .with_response_certification(DefaultResponseCertification::response_header_exclusions(
+                vec![],
+            ))
+            .build();
+        headers.push((
+            CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+            cel_expr.to_string(),
+        ));
+
+        let cert_request = HttpRequest::get(path.to_string()).build();
+        let cert_response = HttpResponse::builder()
+            .with_status_code(
+                StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            )
+            .with_body(Cow::Borrowed(response.body()))
+            .with_headers(headers.clone())
+            .build();
+
+        let certification = HttpCertification::full(&cel_expr, &cert_request, &cert_response, None)
+            .unwrap_or_else(|err| {
+                ic_cdk::trap(format!("Failed to create certification for {path}: {err}"));
+            });
+
+        let tree_entry =
+            HttpCertificationTreeEntry::new(HttpCertificationPath::exact(path), certification);
+
+        HTTP_TREE.with(|tree| {
+            tree.borrow_mut().insert(&tree_entry);
+        });
+        ASSET_ROUTER.with_borrow(|asset_router| {
+            certified_data_set(asset_router.root_hash());
+        });
+
+        Some(assets::CachedHttpResponse {
+            status_code,
+            headers,
+            body: response.body().to_vec(),
+        })
+    };
 
     DYNAMIC_CACHE.with(|dc| {
         dc.borrow_mut().insert(
@@ -393,6 +535,8 @@ fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> Http
             CachedDynamicAsset {
                 certified_at: ic_cdk::api::time(),
                 ttl: effective_ttl,
+                status_code,
+                cached_response,
             },
         );
     });
