@@ -7,8 +7,9 @@
 //! # Features
 //!
 //! - **File-based routing** — `src/routes/` maps directly to URL paths.
-//!   Dynamic segments (`_postId/`), catch-all wildcards (`all.rs`), and nested
-//!   directories all work out of the box. See [`build::generate_routes`].
+//!   Dynamic segments (`_postId/`), catch-all wildcards (`all.rs`), dotted
+//!   filenames (`og.png.rs` → `/og.png`), and nested directories all work
+//!   out of the box. See [`build::generate_routes`].
 //! - **IC response certification** — responses are automatically certified so
 //!   boundary nodes can verify them. Static assets and dynamic content are
 //!   handled transparently.

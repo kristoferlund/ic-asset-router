@@ -111,6 +111,7 @@ curl "http://$(dfx canister id my_canister).localhost:4943/"
 |---------|-------|-------------|
 | `index.rs` | `/` | Index handler for the enclosing directory |
 | `about.rs` | `/about` | Named route |
+| `og.png.rs` | `/og.png` | Dotted filename — serves at the literal path including the extension |
 | `_postId/index.rs` | `/:postId` | Dynamic segment — generates a typed `Params` struct |
 | `all.rs` | `/*` | Catch-all wildcard — remaining path in `ctx.wildcard` |
 | `middleware.rs` | — | Wraps all handlers in this directory and below |
@@ -129,6 +130,24 @@ pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
     // ...
 }
 ```
+
+### Dotted filenames
+
+Files with dots in their name (before the `.rs` extension) are served at the literal path including the dot. This is useful for dynamically generated assets like images or feeds that need a specific file extension in the URL:
+
+```rust
+// src/routes/app/_id/og.png.rs → serves at /app/:id/og.png
+pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
+    let png_bytes = generate_og_image(&ctx.params.id);
+    HttpResponse::builder()
+        .with_status_code(StatusCode::OK)
+        .with_headers(vec![("content-type".into(), "image/png".into())])
+        .with_body(Cow::Owned(png_bytes))
+        .build()
+}
+```
+
+The build script converts dots to underscores for the Rust module name (`og.png.rs` → `mod og_png`) and emits a `#[path = "og.png.rs"]` attribute so the compiler can find the source file.
 
 ### Typed search params
 

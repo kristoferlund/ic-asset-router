@@ -105,6 +105,26 @@ pub fn generate_routes() {
 ///
 /// The `dir` parameter is the path to the routes directory relative to the
 /// crate root (e.g. `"src/routes"` or `"src/api/routes"`).
+///
+/// # Routing conventions
+///
+/// | Filesystem pattern | URL route | Notes |
+/// |--------------------|-----------|-------|
+/// | `index.rs` | `/` (parent dir) | Index handler |
+/// | `about.rs` | `/about` | Named route |
+/// | `og.png.rs` | `/og.png` | Dotted filename — dots are preserved in the URL |
+/// | `_postId/index.rs` | `/:postId` | Dynamic segment with typed `Params` struct |
+/// | `all.rs` | `/*` | Catch-all wildcard |
+/// | `middleware.rs` | — | Scoped middleware |
+/// | `not_found.rs` | — | Custom 404 handler |
+///
+/// ## Dotted filenames
+///
+/// Files with dots before the `.rs` extension (e.g. `og.png.rs`, `feed.xml.rs`)
+/// are served at the literal path including the dot (`/og.png`, `/feed.xml`).
+/// The Rust module name replaces dots with underscores (`og_png`), and a
+/// `#[path = "og.png.rs"]` attribute is emitted in the generated `mod.rs` so
+/// the compiler can locate the source file.
 pub fn generate_routes_from(dir: &str) {
     let routes_dir = Path::new(dir);
     let out_dir = std::env::var("OUT_DIR")
@@ -550,12 +570,20 @@ fn process_directory(
             };
             let module_path = file_to_handler_path(&prefix, stem);
 
-            // All filenames are valid Rust identifiers with the new naming convention
-            // (_param, all, etc.) — no #[path = "..."] attributes needed.
-            if mod_name.starts_with('_') {
-                children.push(format!("#[allow(non_snake_case)]\npub mod {mod_name};\n"));
+            // Emit module declaration. When the sanitized module name differs from the
+            // filename stem (e.g. `og.png.rs` → mod `og_png`), add a `#[path]` attribute
+            // so the compiler can find the source file.
+            let path_attr = if mod_name != stem {
+                format!("#[path = \"{stem}.rs\"]\n")
             } else {
-                children.push(format!("pub mod {mod_name};\n"));
+                String::new()
+            };
+            if mod_name.starts_with('_') {
+                children.push(format!(
+                    "{path_attr}#[allow(non_snake_case)]\npub mod {mod_name};\n"
+                ));
+            } else {
+                children.push(format!("{path_attr}pub mod {mod_name};\n"));
             }
 
             // Scan the file for recognized method exports
@@ -771,11 +799,12 @@ fn camel_to_snake(s: &str) -> String {
     result
 }
 
+/// Sanitize a filesystem name into a valid Rust module identifier.
+///
+/// Dots are replaced with underscores so that dotted filenames like `og.png.rs`
+/// produce valid module names (`og_png`). When the sanitized name differs from
+/// the original, the caller emits a `#[path = "..."]` attribute.
 fn sanitize_mod(name: &str) -> String {
-    // With the new naming convention, all filenames are valid Rust identifiers:
-    // - `_param` prefixed names are dynamic segments (already valid identifiers)
-    // - `all` is the catch-all filename (already a valid identifier)
-    // - No more `:param` or `*` filenames
     name.replace('.', "_")
 }
 

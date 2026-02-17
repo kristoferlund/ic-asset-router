@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "ic-asset-router"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "ic-asset-certification",
  "ic-cdk",
