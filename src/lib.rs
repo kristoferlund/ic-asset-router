@@ -160,6 +160,8 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
 pub mod assets;
 /// Build-script utilities for file-based route generation.
 pub mod build;
+/// Certification mode configuration types.
+pub mod certification;
 /// Global configuration types: security headers, cache control, TTL settings.
 pub mod config;
 /// Request context types passed to route handlers.
@@ -172,6 +174,7 @@ pub mod mime;
 pub mod router;
 
 pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at};
+pub use certification::{CertificationMode, FullConfig, FullConfigBuilder, ResponseOnlyConfig};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
 pub use context::{
     deserialize_search_params, parse_form_body, parse_query, url_decode, QueryParams, RouteContext,

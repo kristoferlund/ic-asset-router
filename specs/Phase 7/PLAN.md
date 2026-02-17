@@ -43,14 +43,14 @@
 
 ### 7.1 — Define Certification Configuration Types
 
-- [ ] **7.1.1** Create `src/certification.rs` with the `CertificationMode` enum (`Skip`, `ResponseOnly(ResponseOnlyConfig)`, `Full(FullConfig)`) and its `Default` impl (returns `ResponseOnly`).
-- [ ] **7.1.2** Implement `ResponseOnlyConfig` with `include_headers` and `exclude_headers` fields and its `Default` impl (wildcard include, exclude `date` / `ic-certificate` / `ic-certificate-expression`).
-- [ ] **7.1.3** Implement `FullConfig` with `request_headers`, `query_params`, and `response: ResponseOnlyConfig` fields and its `Default` impl.
-- [ ] **7.1.4** Implement `FullConfigBuilder` with `with_request_headers`, `with_query_params`, `with_response_headers`, `excluding_response_headers`, and `build`. Ensure header name normalization (lowercase) in every `with_*_headers` method.
-- [ ] **7.1.5** Implement convenience constructors: `CertificationMode::skip()`, `CertificationMode::response_only()`, and `CertificationMode::authenticated()`.
-- [ ] **7.1.6** Add `pub mod certification;` to `src/lib.rs` and export the new types.
-- [ ] **7.1.7** Write unit tests: default is `ResponseOnly`, `skip()` produces `Skip`, `response_only()` has correct default config, `authenticated()` has `authorization` in request_headers and `content-type` in response, builder with all/partial/no options, header normalization.
-- [ ] **7.1.8** Verify: `cargo check` and `cargo test` pass.
+- [x] **7.1.1** Create `src/certification.rs` with the `CertificationMode` enum (`Skip`, `ResponseOnly(ResponseOnlyConfig)`, `Full(FullConfig)`) and its `Default` impl (returns `ResponseOnly`).
+- [x] **7.1.2** Implement `ResponseOnlyConfig` with `include_headers` and `exclude_headers` fields and its `Default` impl (wildcard include, exclude `date` / `ic-certificate` / `ic-certificate-expression`).
+- [x] **7.1.3** Implement `FullConfig` with `request_headers`, `query_params`, and `response: ResponseOnlyConfig` fields and its `Default` impl.
+- [x] **7.1.4** Implement `FullConfigBuilder` with `with_request_headers`, `with_query_params`, `with_response_headers`, `excluding_response_headers`, and `build`. Ensure header name normalization (lowercase) in every `with_*_headers` method.
+- [x] **7.1.5** Implement convenience constructors: `CertificationMode::skip()`, `CertificationMode::response_only()`, and `CertificationMode::authenticated()`.
+- [x] **7.1.6** Add `pub mod certification;` to `src/lib.rs` and export the new types.
+- [x] **7.1.7** Write unit tests: default is `ResponseOnly`, `skip()` produces `Skip`, `response_only()` has correct default config, `authenticated()` has `authorization` in request_headers and `content-type` in response, builder with all/partial/no options, header normalization.
+- [x] **7.1.8** Verify: `cargo check` and `cargo test` pass.
 
 ---
 
