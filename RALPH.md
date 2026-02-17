@@ -8,17 +8,46 @@ The idea, introduced by [Geoffrey Huntley](https://ghuntley.com/loop), is straig
 
 [![Watch: Everything is a RALPH loop](https://img.youtube.com/vi/4Nna09dG_c0/maxresdefault.jpg)](https://youtu.be/4Nna09dG_c0)
 
-The process:
+## The workflow
 
-1. **Write detailed specs** — Define every feature as a self-contained specification with clear acceptance criteria.
-2. **Create an implementation plan** — Group the specs into phases with dependency ordering.
-3. **Loop** — Feed each spec to the AI agent one at a time via a shell script (`loop.sh`), pushing results after each iteration.
+### 1. Write detailed specs
 
-The `loop.sh` script in this repo automates step 3: it pipes a prompt file to the coding agent, pushes the result, and repeats.
+Each feature is defined as a self-contained markdown file with clear acceptance criteria. Browse the [specs/](specs/README.md) folder to see every spec used to build this library.
+
+### 2. Generate an implementation plan
+
+A [reusable prompt](specs/Generate%20Implementation%20Plan%20—%20Prompt.md) is fed to the AI agent along with the folder of specs for one phase. The agent reads every spec, analyzes dependencies between them, and produces a `PLAN.md` with:
+
+- A dependency graph determining execution order
+- Atomic, checkboxed tasks decomposed from each spec
+- A verification protocol (which commands to run after each task)
+- A **session prompt template** — a ready-to-paste prompt that the loop script feeds to the agent in each iteration
+
+The plan also defines session boundaries: one spec group per session, commit before stopping, never continue to the next group.
+
+### 3. Loop
+
+The `loop.sh` script automates execution. It pipes the session prompt to the coding agent, pushes the result, and repeats.
 
 ```
 ./loop.sh PROMPT.md 5    # Run 5 iterations
 ```
+
+Each iteration: the agent reads `PLAN.md`, finds the next incomplete spec group, reads the corresponding spec, implements the tasks, runs verification, marks tasks complete, commits, and stops.
+
+### 4. Session feedback (SESSION.md)
+
+Starting from Phase 5, each session appends a summary to `SESSION.md` in the phase folder. The agent is instructed to record:
+
+- What was accomplished
+- Obstacles encountered (compilation errors, test failures, workarounds)
+- **Out-of-scope observations** — anything noticed during implementation that should be addressed but wasn't part of the current task
+
+This last point turned out to be the most valuable part of the process. The agent acts as a second pair of eyes on the codebase, identifying bugs, design gaps, and potential improvements as it works through each spec.
+
+For example, during Phase 5 sessions the agent flagged issues like shared scanning logic that should be unified, lifetime warnings in test helpers, and generated files that should be gitignored. These observations became the raw material for Phase 6 — but they didn't turn into tasks automatically. The human still reviews the observations, decides which ones matter, writes proper specs with acceptance criteria, and feeds those specs through the plan generation step before the agent works on them. The agent surfaces problems; the human decides what to do about them.
+
+See [Phase 5 SESSION.md](specs/Phase%205/SESSION.md) and [Phase 6 SESSION.md](specs/Phase%206/SESSION.md) for the full session logs.
 
 ## Phases
 
@@ -37,9 +66,11 @@ The library was developed across six phases. Each phase has a plan and a set of 
 
 - **Clean context** — Each session starts fresh with only the relevant spec, avoiding the quality degradation that comes from overloaded context windows.
 - **Verifiable progress** — Every loop iteration produces a commit, so you can review changes incrementally.
+- **Self-improving** — The session feedback mechanism means the agent surfaces bugs and design gaps as it works. These observations inform (but don't automatically become) the specs for later phases — the human still curates and specifies the work.
 - **Reproducible** — The specs serve as documentation after the fact. Anyone can read them to understand not just what was built, but the reasoning behind each decision.
 
 ## Further reading
 
-- [Everything is a RALPH loop](https://ghuntley.com/loop) — Geoffrey Huntley's original post on the technique
+- [Everything is a RALPH loop](https://ghuntley.com/loop) — Geoffrey Huntley's post on the technique
+- [Generate Implementation Plan — Prompt](specs/Generate%20Implementation%20Plan%20—%20Prompt.md) — The reusable prompt for converting specs into a plan
 - [specs/](specs/README.md) — The full specification documents used to build this library
