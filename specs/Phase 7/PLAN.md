@@ -62,27 +62,27 @@ This is the largest spec. Split into three sub-sections: types, core implementat
 
 #### 7.2A — Types and structure
 
-- [ ] **7.2.1** Create `src/asset_router.rs` (module root). Define `AssetEncoding` enum, `CertifiedAsset` struct, `AssetCertificationConfig` struct (including `certified_at` and `ttl` fields), and `AssetRouterError` enum.
-- [ ] **7.2.2** Implement `CertifiedAsset::is_dynamic()` and `CertifiedAsset::is_expired()`.
-- [ ] **7.2.3** Define the `AssetRouter` struct with fields: `assets: HashMap<String, CertifiedAsset>`, `aliases: HashMap<String, String>`, `fallbacks: Vec<(String, String)>`, `tree: Rc<RefCell<HttpCertificationTree>>`. Implement `with_tree()`, `root_hash()`, `contains_asset()`, `get_asset()`, `get_asset_mut()`.
-- [ ] **7.2.4** Verify: `cargo check` passes with the new module compiled.
+- [x] **7.2.1** Create `src/asset_router.rs` (module root). Define `AssetEncoding` enum, `CertifiedAsset` struct, `AssetCertificationConfig` struct (including `certified_at` and `ttl` fields), and `AssetRouterError` enum.
+- [x] **7.2.2** Implement `CertifiedAsset::is_dynamic()` and `CertifiedAsset::is_expired()`.
+- [x] **7.2.3** Define the `AssetRouter` struct with fields: `assets: HashMap<String, CertifiedAsset>`, `aliases: HashMap<String, String>`, `fallbacks: Vec<(String, String)>`, `tree: Rc<RefCell<HttpCertificationTree>>`. Implement `with_tree()`, `root_hash()`, `contains_asset()`, `get_asset()`, `get_asset_mut()`.
+- [x] **7.2.4** Verify: `cargo check` passes with the new module compiled.
 
 #### 7.2B — Core implementation
 
-- [ ] **7.2.5** Implement `build_cel_expression()` — a function that takes `&CertificationMode` and produces the typed CEL expression needed by `ic-http-certification`. Handle all three modes (`Skip`, `ResponseOnly`, `Full`) including `with_request_headers` and `with_request_query_parameters` for Full mode. Use the existing codebase's certification patterns (see `src/lib.rs:274–293`) as reference for correct API usage.
-- [ ] **7.2.6** Implement `AssetRouter::certify_asset()` for `Skip` and `ResponseOnly` modes. Return `FullModeRequiresRequest` error for `Full` mode. Handle encoding map construction, tree insertion, fallback registration (sorted by scope length), and alias registration.
-- [ ] **7.2.7** Implement `AssetRouter::certify_dynamic_asset()` for all three modes including `Full` (takes `&HttpRequest` + `&HttpResponse`).
-- [ ] **7.2.8** Implement `AssetRouter::serve_asset()` — exact match → alias resolution → sorted fallback lookup. Handle encoding negotiation (Brotli > Gzip > Identity). Return `(HttpResponse, witness, expr_path)` tuple; Skip mode returns empty witness.
-- [ ] **7.2.9** Implement `AssetRouter::delete_asset()` — resolve alias, remove from tree, remove aliases and fallback entries.
-- [ ] **7.2.10** Verify: `cargo check` passes.
+- [x] **7.2.5** Implement `build_cel_expression()` — a function that takes `&CertificationMode` and produces the typed CEL expression needed by `ic-http-certification`. Handle all three modes (`Skip`, `ResponseOnly`, `Full`) including `with_request_headers` and `with_request_query_parameters` for Full mode. Use the existing codebase's certification patterns (see `src/lib.rs:274–293`) as reference for correct API usage.
+- [x] **7.2.6** Implement `AssetRouter::certify_asset()` for `Skip` and `ResponseOnly` modes. Return `FullModeRequiresRequest` error for `Full` mode. Handle encoding map construction, tree insertion, fallback registration (sorted by scope length), and alias registration.
+- [x] **7.2.7** Implement `AssetRouter::certify_dynamic_asset()` for all three modes including `Full` (takes `&HttpRequest` + `&HttpResponse`).
+- [x] **7.2.8** Implement `AssetRouter::serve_asset()` — exact match → alias resolution → sorted fallback lookup. Handle encoding negotiation (Brotli > Gzip > Identity). Return `(HttpResponse, witness, expr_path)` tuple; Skip mode returns empty witness.
+- [x] **7.2.9** Implement `AssetRouter::delete_asset()` — resolve alias, remove from tree, remove aliases and fallback entries.
+- [x] **7.2.10** Verify: `cargo check` passes.
 
 #### 7.2C — Tests
 
-- [ ] **7.2.11** Write unit tests for `certify_asset` (ResponseOnly success, Skip success, Full returns error), `certify_dynamic_asset` (Full success, ResponseOnly/Skip also work).
-- [ ] **7.2.12** Write unit tests for `serve_asset` (exact match, alias resolution, fallback match, longest-prefix fallback wins, no match returns None, Skip has no witness, encoding negotiation).
-- [ ] **7.2.13** Write unit tests for `delete_asset` (removes asset + aliases + fallback, delete via alias, delete nonexistent is no-op), `root_hash` changes after certify/delete, re-certification replaces old, mode switching.
-- [ ] **7.2.14** Write unit tests for `is_dynamic`, `is_expired` on `CertifiedAsset`.
-- [ ] **7.2.15** Verify: `cargo test` passes (all new and existing tests).
+- [x] **7.2.11** Write unit tests for `certify_asset` (ResponseOnly success, Skip success, Full returns error), `certify_dynamic_asset` (Full success, ResponseOnly/Skip also work).
+- [x] **7.2.12** Write unit tests for `serve_asset` (exact match, alias resolution, fallback match, longest-prefix fallback wins, no match returns None, Skip has no witness, encoding negotiation).
+- [x] **7.2.13** Write unit tests for `delete_asset` (removes asset + aliases + fallback, delete via alias, delete nonexistent is no-op), `root_hash` changes after certify/delete, re-certification replaces old, mode switching.
+- [x] **7.2.14** Write unit tests for `is_dynamic`, `is_expired` on `CertifiedAsset`.
+- [x] **7.2.15** Verify: `cargo test` passes (all new and existing tests).
 
 ---
 

@@ -156,6 +156,8 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
         .build()
 }
 
+/// Custom asset router with per-asset certification modes.
+pub mod asset_router;
 /// Static and dynamic asset certification, invalidation, and serving helpers.
 pub mod assets;
 /// Build-script utilities for file-based route generation.
