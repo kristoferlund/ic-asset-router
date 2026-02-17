@@ -294,6 +294,11 @@ Each example is a complete, deployable ICP canister. Clone the repo and `dfx dep
 | [`custom-404`](examples/custom-404/) | Styled 404 page via `not_found.rs` |
 | [`react-app`](examples/react-app/) | React SPA with TanStack Router/Query, per-route SEO meta tags, and canister API calls |
 
+## How This Library Was Built
+
+> [!NOTE]
+> This project was built using the [RALPH loop](https://ghuntley.com/loop) technique: detailed specs for every feature, an implementation plan divided into phases, and a `loop.sh` script that feeds each phase to an AI builder agent one session at a time — keeping the context window focused for maximum output quality. Read more in [RALPH.md](RALPH.md) or browse the [full specs](specs/README.md).
+
 ## License
 
 MIT
