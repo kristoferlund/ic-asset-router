@@ -56,6 +56,13 @@ struct MethodExport {
     /// "routes::posts::index::SearchParams"). `None` for routes without typed
     /// search params.
     search_params_type_path: Option<String>,
+    /// The Rust module path to the route file (e.g. "routes::api::users").
+    /// Used to reference the generated `__route_config()` function.
+    module_path: String,
+    /// Whether the route file has a `#[route(certification = ...)]` attribute.
+    /// When true, the generated route tree calls `module_path::__route_config()`.
+    /// When false, `RouteConfig::default()` is used.
+    has_certification_attribute: bool,
 }
 
 /// Mapping from a route param name to its struct field name.
@@ -166,7 +173,7 @@ pub fn generate_routes_from(dir: &str) {
     output.push_str("use ic_asset_router::router::{NodeType, RouteNode, RouteParams};\n");
     output.push_str("#[allow(unused_imports)]\n");
     output
-        .push_str("use ic_asset_router::{RouteContext, parse_query, deserialize_search_params};\n");
+        .push_str("use ic_asset_router::{RouteConfig, RouteContext, parse_query, deserialize_search_params};\n");
     output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_http_certification::HttpRequest;\n");
     output.push_str("#[allow(unused_imports)]\n");
@@ -260,6 +267,27 @@ pub fn generate_routes_from(dir: &str) {
             "        root.insert(\"{}\", {}, __route_handler_{i});\n",
             export.route_path, export.method_variant,
         ));
+    }
+
+    // Generate set_route_config calls. Multiple methods on the same path share
+    // the same config, so we deduplicate by route_path.
+    {
+        let mut seen_paths = std::collections::HashSet::new();
+        for export in exports.iter() {
+            if seen_paths.insert(export.route_path.clone()) {
+                if export.has_certification_attribute {
+                    output.push_str(&format!(
+                        "        root.set_route_config(\"{}\", {}::__route_config());\n",
+                        export.route_path, export.module_path,
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "        root.set_route_config(\"{}\", RouteConfig::default());\n",
+                        export.route_path,
+                    ));
+                }
+            }
+        }
     }
 
     for mw in &middleware_exports {
@@ -630,6 +658,10 @@ fn process_directory(
                 None
             };
 
+            // Detect #[route(certification = ...)] attribute for per-route
+            // certification configuration.
+            let has_cert_attr = scan_certification_attribute(&path);
+
             for (fn_name, variant) in &methods {
                 exports.push(MethodExport {
                     route_path: route_path.clone(),
@@ -638,6 +670,8 @@ fn process_directory(
                     params: param_mappings.clone(),
                     params_type_path: params_type_path.clone(),
                     search_params_type_path: search_params_type_path.clone(),
+                    module_path: module_path.clone(),
+                    has_certification_attribute: has_cert_attr,
                 });
             }
         }
@@ -747,6 +781,23 @@ fn scan_route_attribute(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Scan a Rust source file for a `#[route(...)]` attribute that contains a
+/// `certification` key.
+///
+/// Returns `true` if the file has a `#[route(certification = ...)]` or
+/// `#[route(... certification = ...)]` attribute. This is a best-effort text
+/// scan — it does not parse the full attribute syntax.
+fn scan_certification_attribute(path: &Path) -> bool {
+    let source = fs::read_to_string(path).unwrap_or_default();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[route(") && trimmed.contains("certification") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Scan a Rust source file for a `pub struct SearchParams` declaration.
@@ -1602,5 +1653,120 @@ pub fn get() -> () { todo!() }
         );
         assert_eq!(exports.len(), 1);
         assert!(exports[0].search_params_type_path.is_some());
+    }
+
+    // --- scan_certification_attribute tests ---
+
+    #[test]
+    fn scan_certification_attribute_skip() {
+        let path = write_temp_file(
+            "cert_skip.rs",
+            r#"
+#[route(certification = "skip")]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_response_only() {
+        let path = write_temp_file(
+            "cert_ro.rs",
+            r#"
+#[route(certification = "response_only")]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_authenticated() {
+        let path = write_temp_file(
+            "cert_auth.rs",
+            r#"
+#[route(certification = "authenticated")]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_custom() {
+        let path = write_temp_file(
+            "cert_custom.rs",
+            r#"
+#[route(certification = custom(request_headers = ["authorization"]))]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_absent() {
+        let path = write_temp_file(
+            "cert_absent.rs",
+            r#"
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(!scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_path_only() {
+        let path = write_temp_file(
+            "cert_path_only.rs",
+            r#"
+#[route(path = "ogimage.png")]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        // Has #[route(...)] but no certification key
+        assert!(!scan_certification_attribute(&path));
+    }
+
+    // --- process_directory certification detection tests ---
+
+    #[test]
+    fn process_directory_detects_certification_attribute() {
+        let dir = setup_temp_routes(&[(
+            "api.rs",
+            "#[route(certification = \"skip\")]\npub fn get() -> () { todo!() }",
+        )]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
+        assert_eq!(exports.len(), 1);
+        assert!(exports[0].has_certification_attribute);
+    }
+
+    #[test]
+    fn process_directory_no_certification_attribute() {
+        let dir = setup_temp_routes(&[("about.rs", "pub fn get() -> () { todo!() }")]);
+        let mut exports = Vec::new();
+        let mut mw = Vec::new();
+        let mut nf = Vec::new();
+        process_directory(
+            dir.path(),
+            String::new(),
+            &mut exports,
+            &mut mw,
+            &mut nf,
+            &[],
+        );
+        assert_eq!(exports.len(), 1);
+        assert!(!exports[0].has_certification_attribute);
     }
 }

@@ -169,6 +169,8 @@ pub mod context;
 pub mod middleware;
 /// MIME type detection from file extensions.
 pub mod mime;
+/// Per-route configuration types (certification mode, TTL, headers).
+pub mod route_config;
 /// Route trie, handler types, and dispatch logic.
 pub mod router;
 
@@ -181,6 +183,8 @@ pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
 pub use context::{
     deserialize_search_params, parse_form_body, parse_query, url_decode, QueryParams, RouteContext,
 };
+pub use ic_asset_router_macros::route;
+pub use route_config::RouteConfig;
 pub use router::HandlerResult;
 
 thread_local! {
@@ -253,7 +257,7 @@ pub fn http_request(
     }
 
     match root_route_node.resolve(&path, &method) {
-        RouteResult::Found(handler, params, _result_handler) => match opts.certify {
+        RouteResult::Found(handler, params, _result_handler, _pattern) => match opts.certify {
             false => {
                 debug_log!("Serving {} without certification", path);
                 let mut response =
@@ -499,28 +503,57 @@ pub fn http_request(
 /// not-found handler output — go through this single path. The not-found
 /// handler's response is certified at the canonical `/__not_found` path so
 /// that only one cache entry exists for all 404s.
+#[allow(dead_code)]
 fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
-    certify_dynamic_response_inner(response, path, None)
+    certify_dynamic_response_inner(
+        response,
+        path,
+        None,
+        certification::CertificationMode::response_only(),
+        None,
+    )
 }
 
-/// Certify a dynamic response with optional fallback configuration.
+/// Certify a dynamic response with per-route certification mode and optional
+/// fallback configuration.
 ///
 /// When `fallback_for` is `Some`, the asset is registered as a fallback
 /// for the given scope. This is used by the not-found handler to certify
 /// a single `/__not_found` asset that serves as a fallback for all paths.
+///
+/// The `mode` parameter controls how the response is certified:
+/// - `Skip` / `ResponseOnly` — uses `certify_asset()` (no request needed).
+/// - `Full` — uses `certify_dynamic_asset()` with the original request.
+///
+/// The `request` parameter is required for `Full` mode and ignored otherwise.
 fn certify_dynamic_response_inner(
     response: HttpResponse<'static>,
     path: &str,
     fallback_for: Option<String>,
+    mode: certification::CertificationMode,
+    request: Option<&HttpRequest>,
+) -> HttpResponse<'static> {
+    certify_dynamic_response_with_ttl(response, path, fallback_for, mode, request, None)
+}
+
+/// Core certification function with all parameters including optional TTL override.
+fn certify_dynamic_response_with_ttl(
+    response: HttpResponse<'static>,
+    path: &str,
+    fallback_for: Option<String>,
+    mode: certification::CertificationMode,
+    request: Option<&HttpRequest>,
+    ttl_override: Option<std::time::Duration>,
 ) -> HttpResponse<'static> {
     let content_type = extract_content_type(&response);
-    let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
+    let effective_ttl = ttl_override
+        .or_else(|| ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path)));
 
     let dynamic_cache_control =
         ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
 
     let config = asset_router::AssetCertificationConfig {
-        mode: certification::CertificationMode::response_only(),
+        mode: mode.clone(),
         content_type: Some(content_type),
         headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
         encodings: vec![],
@@ -533,9 +566,29 @@ fn certify_dynamic_response_inner(
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
         // Delete any existing asset at this path before re-certifying.
         asset_router.delete_asset(path);
-        if let Err(err) = asset_router.certify_asset(path, response.body().to_vec(), config) {
-            ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+
+        match &mode {
+            certification::CertificationMode::Full(_) => {
+                // Full mode requires the original request for certification.
+                let req = request.unwrap_or_else(|| {
+                    ic_cdk::trap(
+                        "Full certification mode requires the original request, \
+                         but none was provided",
+                    )
+                });
+                if let Err(err) = asset_router.certify_dynamic_asset(path, req, &response, config) {
+                    ic_cdk::trap(format!("Failed to certify dynamic asset (full): {err}"));
+                }
+            }
+            _ => {
+                // Skip and ResponseOnly modes use certify_asset.
+                if let Err(err) = asset_router.certify_asset(path, response.body().to_vec(), config)
+                {
+                    ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+                }
+            }
         }
+
         certified_data_set(&asset_router.root_hash());
     });
 
@@ -563,7 +616,14 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
     let method = req.method().clone();
 
     match root_route_node.resolve(&path, &method) {
-        RouteResult::Found(handler, params, result_handler) => {
+        RouteResult::Found(handler, params, result_handler, pattern) => {
+            // Look up the per-route certification configuration.
+            let route_config = root_route_node.get_route_config(&pattern);
+            let cert_mode = route_config
+                .map(|rc| rc.certification.clone())
+                .unwrap_or_else(certification::CertificationMode::response_only);
+            let route_ttl = route_config.and_then(|rc| rc.ttl);
+
             // If a HandlerResultFn is registered, call it first to check for
             // NotModified. This avoids running the full middleware + certification
             // pipeline when the handler signals that the content hasn't changed.
@@ -610,14 +670,29 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                         // standard certification pipeline below. We use the
                         // response from the HandlerResultFn directly (middleware
                         // has already been bypassed for result handlers).
-                        return certify_dynamic_response(response, &path);
+                        return certify_dynamic_response_with_ttl(
+                            response,
+                            &path,
+                            None,
+                            cert_mode,
+                            Some(&req),
+                            route_ttl,
+                        );
                     }
                 }
             }
 
             // Standard path: call handler through middleware chain, then certify.
-            let response = root_route_node.execute_with_middleware(&path, handler, req, params);
-            certify_dynamic_response(response, &path)
+            let response =
+                root_route_node.execute_with_middleware(&path, handler, req.clone(), params);
+            certify_dynamic_response_with_ttl(
+                response,
+                &path,
+                None,
+                cert_mode,
+                Some(&req),
+                route_ttl,
+            )
         }
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
@@ -684,6 +759,8 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                 response,
                 NOT_FOUND_CANONICAL_PATH,
                 Some("/".to_string()),
+                certification::CertificationMode::response_only(),
+                None,
             )
         }
     }
@@ -778,7 +855,7 @@ mod tests {
             .with_url("/no-ct")
             .build();
         match root.resolve("/no-ct", &Method::GET) {
-            RouteResult::Found(handler, params, _) => {
+            RouteResult::Found(handler, params, _, _) => {
                 let response = handler(req, params);
                 assert_eq!(response.status_code(), StatusCode::OK);
                 assert_eq!(response.body(), b"no content-type");

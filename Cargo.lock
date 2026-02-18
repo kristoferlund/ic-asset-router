@@ -373,6 +373,7 @@ dependencies = [
 name = "ic-asset-router"
 version = "0.0.1"
 dependencies = [
+ "ic-asset-router-macros",
  "ic-cdk",
  "ic-certification",
  "ic-http-certification",
@@ -380,6 +381,15 @@ dependencies = [
  "proptest",
  "serde",
  "serde_urlencoded",
+]
+
+[[package]]
+name = "ic-asset-router-macros"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.115",
 ]
 
 [[package]]

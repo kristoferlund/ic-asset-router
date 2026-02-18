@@ -64,9 +64,10 @@ Explain:
 
 ### Session Prompt Template
 Include a ready-to-paste prompt block that future sessions will use. The prompt must:
-- Reference PLAN.md and the spec files folder by absolute path
+- Reference PLAN.md, SESSION.md and the spec files folder by absolute path
 - Tell the agent to read the plan, find the next incomplete spec group, read its spec file
 - Tell the agent to study the relevant source files in the target codebase
+- Tell the agent to read the notes from previous sessions
 - Tell the agent to implement tasks in order, running verification after each
 - Tell the agent to mark tasks complete in PLAN.md as it goes
 - Tell the agent to git commit all changes before stopping

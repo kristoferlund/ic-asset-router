@@ -2,6 +2,7 @@ use ic_http_certification::{HttpRequest, HttpResponse, Method};
 use std::collections::HashMap;
 
 use crate::middleware::MiddlewareFn;
+use crate::route_config::RouteConfig;
 
 /// Dynamic route parameters extracted from the URL path.
 ///
@@ -20,11 +21,13 @@ pub type HandlerFn = fn(HttpRequest, RouteParams) -> HttpResponse<'static>;
 
 /// Result of matching a path against the route tree (without method dispatch).
 ///
-/// Contains references to the handler maps and the extracted route parameters.
+/// Contains references to the handler maps, the extracted route parameters,
+/// and the matched route pattern (e.g. `"/:id/edit"`).
 type MatchResult<'a> = (
     &'a HashMap<Method, HandlerFn>,
     &'a HashMap<Method, HandlerResultFn>,
     RouteParams,
+    String,
 );
 
 /// A route handler that returns [`HandlerResult`] instead of a bare response.
@@ -110,9 +113,13 @@ pub enum NodeType {
 /// variants to determine how to handle the request.
 pub enum RouteResult {
     /// A handler was found for the given path and method.
+    ///
+    /// Fields: `(handler, params, result_handler, route_pattern)`.
     /// The optional `HandlerResultFn` is present when the route supports
     /// conditional regeneration via `HandlerResult::NotModified`.
-    Found(HandlerFn, RouteParams, Option<HandlerResultFn>),
+    /// The `route_pattern` is the pattern string as registered (e.g.
+    /// `"/:id/edit"`), used to look up per-route configuration.
+    Found(HandlerFn, RouteParams, Option<HandlerResultFn>, String),
     /// The path exists but the requested method is not registered.
     /// Contains the list of methods that *are* registered for this path.
     MethodNotAllowed(Vec<Method>),
@@ -151,6 +158,11 @@ pub struct RouteNode {
     /// instead of the default 404 response when no route matches the request
     /// path. Only the root node's value is used at dispatch time.
     not_found_handler: Option<HandlerFn>,
+    /// Per-route certification configuration, stored at the root node.
+    /// Keys are route path patterns (e.g. `"/api/users"`, `"/:id"`).
+    /// Only the root node's map is used at dispatch time; child nodes ignore
+    /// this field.
+    route_configs: HashMap<String, RouteConfig>,
 }
 
 impl RouteNode {
@@ -163,6 +175,7 @@ impl RouteNode {
             result_handlers: HashMap::new(),
             middlewares: Vec::new(),
             not_found_handler: None,
+            route_configs: HashMap::new(),
         }
     }
 
@@ -200,6 +213,25 @@ impl RouteNode {
     /// Returns the custom not-found handler, if one has been registered.
     pub fn not_found_handler(&self) -> Option<HandlerFn> {
         self.not_found_handler
+    }
+
+    /// Register a [`RouteConfig`] for the given route path.
+    ///
+    /// This stores per-route certification configuration at the root node.
+    /// The config is keyed by route path pattern (e.g. `"/api/users"`).
+    /// Multiple methods on the same path share the same config.
+    ///
+    /// If a config already exists for the path, it is replaced.
+    pub fn set_route_config(&mut self, path: &str, config: RouteConfig) {
+        self.route_configs.insert(path.to_string(), config);
+    }
+
+    /// Look up the [`RouteConfig`] for a given route path.
+    ///
+    /// Returns `None` if no config has been registered for the path.
+    /// Only the root node's map is consulted.
+    pub fn get_route_config(&self, path: &str) -> Option<&RouteConfig> {
+        self.route_configs.get(path)
     }
 
     /// Register a handler for the given path and HTTP method.
@@ -329,10 +361,10 @@ impl RouteNode {
     pub fn resolve(&self, path: &str, method: &Method) -> RouteResult {
         let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         match self._match(&segments) {
-            Some((handlers, result_handlers, params)) => {
+            Some((handlers, result_handlers, params, pattern)) => {
                 if let Some(&handler) = handlers.get(method) {
                     let result_handler = result_handlers.get(method).copied();
-                    RouteResult::Found(handler, params, result_handler)
+                    RouteResult::Found(handler, params, result_handler, pattern)
                 } else {
                     let allowed: Vec<Method> = handlers.keys().cloned().collect();
                     RouteResult::MethodNotAllowed(allowed)
@@ -354,7 +386,12 @@ impl RouteNode {
     fn _match(&self, segments: &[&str]) -> Option<MatchResult<'_>> {
         if segments.is_empty() {
             if !self.handlers.is_empty() {
-                return Some((&self.handlers, &self.result_handlers, HashMap::new()));
+                return Some((
+                    &self.handlers,
+                    &self.result_handlers,
+                    HashMap::new(),
+                    "/".to_string(),
+                ));
             }
             // No handlers on this node — check for a wildcard child (empty wildcard match)
             for child in &self.children {
@@ -362,7 +399,12 @@ impl RouteNode {
                     if !child.handlers.is_empty() {
                         let mut params = HashMap::new();
                         params.insert("*".to_string(), String::new());
-                        return Some((&child.handlers, &child.result_handlers, params));
+                        return Some((
+                            &child.handlers,
+                            &child.result_handlers,
+                            params,
+                            "/*".to_string(),
+                        ));
                     }
                 }
             }
@@ -378,9 +420,14 @@ impl RouteNode {
         for child in &self.children {
             if let NodeType::Static(ref s) = child.node_type {
                 if s == head {
-                    if let Some((h, rh, p)) = child._match(tail) {
+                    if let Some((h, rh, p, pattern)) = child._match(tail) {
                         debug_log!("Static match: {:?}", segments);
-                        return Some((h, rh, p));
+                        let full_pattern = if pattern == "/" {
+                            format!("/{s}")
+                        } else {
+                            format!("/{s}{pattern}")
+                        };
+                        return Some((h, rh, p, full_pattern));
                     }
                 }
             }
@@ -389,10 +436,15 @@ impl RouteNode {
         // Param match
         for child in &self.children {
             if let NodeType::Param(ref name) = child.node_type {
-                if let Some((h, rh, mut p)) = child._match(tail) {
+                if let Some((h, rh, mut p, pattern)) = child._match(tail) {
                     p.insert(name.clone(), head.to_string());
                     debug_log!("Param match: {:?}", segments);
-                    return Some((h, rh, p));
+                    let full_pattern = if pattern == "/" {
+                        format!("/:{name}")
+                    } else {
+                        format!("/:{name}{pattern}")
+                    };
+                    return Some((h, rh, p, full_pattern));
                 }
             }
         }
@@ -405,7 +457,12 @@ impl RouteNode {
                     let remaining = segments.join("/");
                     let mut params = HashMap::new();
                     params.insert("*".to_string(), remaining);
-                    return Some((&child.handlers, &child.result_handlers, params));
+                    return Some((
+                        &child.handlers,
+                        &child.result_handlers,
+                        params,
+                        "/*".to_string(),
+                    ));
                 }
             }
         }
@@ -507,7 +564,7 @@ mod tests {
     /// Resolve a path as GET and unwrap the Found variant, returning (handler, params).
     fn resolve_get(root: &RouteNode, path: &str) -> (HandlerFn, RouteParams) {
         match root.resolve(path, &Method::GET) {
-            RouteResult::Found(h, p, _) => (h, p),
+            RouteResult::Found(h, p, _, _) => (h, p),
             other => panic!(
                 "expected Found for GET {path}, got {}",
                 route_result_name(&other)
@@ -517,7 +574,7 @@ mod tests {
 
     fn route_result_name(r: &RouteResult) -> &'static str {
         match r {
-            RouteResult::Found(_, _, _) => "Found",
+            RouteResult::Found(_, _, _, _) => "Found",
             RouteResult::MethodNotAllowed(_) => "MethodNotAllowed",
             RouteResult::NotFound => "NotFound",
         }
@@ -740,7 +797,7 @@ mod tests {
 
         // GET resolves to get handler
         match root.resolve("/api/users", &Method::GET) {
-            RouteResult::Found(handler, params, _) => {
+            RouteResult::Found(handler, params, _, _) => {
                 assert_eq!(
                     body_str(handler(test_request("/api/users"), params)),
                     "get_handler"
@@ -751,7 +808,7 @@ mod tests {
 
         // POST resolves to post handler
         match root.resolve("/api/users", &Method::POST) {
-            RouteResult::Found(handler, params, _) => {
+            RouteResult::Found(handler, params, _, _) => {
                 let req = HttpRequest::builder()
                     .with_method(Method::POST)
                     .with_url("/api/users")
@@ -815,7 +872,7 @@ mod tests {
         // All 7 methods should resolve to Found
         for method in &methods {
             match root.resolve("/test", method) {
-                RouteResult::Found(_, _, _) => {}
+                RouteResult::Found(_, _, _, _) => {}
                 other => panic!(
                     "expected Found for method {}, got {}",
                     method.as_str(),
@@ -1097,7 +1154,7 @@ mod tests {
         // Simulate update path (POST)
         clear_log();
         match root.resolve("/api/data", &Method::POST) {
-            RouteResult::Found(handler, params, _) => {
+            RouteResult::Found(handler, params, _, _) => {
                 let req = HttpRequest::builder()
                     .with_method(Method::POST)
                     .with_url("/api/data")
@@ -1426,12 +1483,12 @@ mod tests {
         root.insert_result("/test", Method::GET, result_handler);
 
         match root.resolve("/test", &Method::GET) {
-            RouteResult::Found(_, _, Some(rh)) => {
+            RouteResult::Found(_, _, Some(rh), _) => {
                 // Verify the result handler returns NotModified
                 let result = rh(test_request("/test"), HashMap::new());
                 assert!(matches!(result, HandlerResult::NotModified));
             }
-            RouteResult::Found(_, _, None) => panic!("expected result handler to be present"),
+            RouteResult::Found(_, _, None, _) => panic!("expected result handler to be present"),
             other => panic!("expected Found, got {}", route_result_name(&other)),
         }
     }
@@ -1443,7 +1500,7 @@ mod tests {
         root.insert("/items/:id", Method::GET, matched_get_handler);
         root.insert("/items/:id", Method::POST, matched_post_handler);
 
-        let (handlers, _, params) = root.match_path("/items/42").expect("should match");
+        let (handlers, _, params, _) = root.match_path("/items/42").expect("should match");
         assert_eq!(params.get("id").unwrap(), "42");
         assert!(handlers.contains_key(&Method::GET));
         assert!(handlers.contains_key(&Method::POST));
@@ -1678,7 +1735,7 @@ mod tests {
                 let mut root = RouteNode::new(NodeType::Static("".into()));
                 root.insert(&path, Method::GET, dummy_handler);
                 match root.resolve(&path, &Method::GET) {
-                    RouteResult::Found(_, _, _) => {},
+                    RouteResult::Found(_, _, _, _) => {},
                     _ => panic!("expected Found for inserted path: {path}"),
                 }
             }
@@ -1710,7 +1767,7 @@ mod tests {
                 let mut root = RouteNode::new(NodeType::Static("".into()));
                 root.insert(&route, Method::GET, dummy_handler);
                 match root.resolve(&path, &Method::GET) {
-                    RouteResult::Found(_, params, _) => {
+                    RouteResult::Found(_, params, _, _) => {
                         prop_assert_eq!(params.get("id").map(|s| s.as_str()), Some(value.as_str()));
                     },
                     other => panic!("expected Found, got {}", route_result_name(&other)),
@@ -1728,7 +1785,7 @@ mod tests {
                 let mut root = RouteNode::new(NodeType::Static("".into()));
                 root.insert(&route, Method::GET, dummy_handler);
                 match root.resolve(&path, &Method::GET) {
-                    RouteResult::Found(_, params, _) => {
+                    RouteResult::Found(_, params, _, _) => {
                         prop_assert_eq!(params.get("*").map(|s| s.as_str()), Some(tail.as_str()));
                     },
                     other => panic!("expected Found, got {}", route_result_name(&other)),
@@ -1759,13 +1816,178 @@ mod tests {
                 root.insert("/x/:first/:second", Method::GET, dummy_handler);
                 let path = format!("/x/{a}/{b}");
                 match root.resolve(&path, &Method::GET) {
-                    RouteResult::Found(_, params, _) => {
+                    RouteResult::Found(_, params, _, _) => {
                         prop_assert_eq!(params.get("first").map(|s| s.as_str()), Some(a.as_str()));
                         prop_assert_eq!(params.get("second").map(|s| s.as_str()), Some(b.as_str()));
                     },
                     other => panic!("expected Found, got {}", route_result_name(&other)),
                 }
             }
+        }
+    }
+
+    // ---- 7.4 Route config and pattern tests ----
+
+    #[test]
+    fn set_and_get_route_config() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/users", Method::GET, matched_get_handler);
+
+        let config = RouteConfig {
+            certification: crate::certification::CertificationMode::skip(),
+            ttl: Some(std::time::Duration::from_secs(60)),
+            headers: vec![],
+        };
+        root.set_route_config("/api/users", config);
+
+        let rc = root
+            .get_route_config("/api/users")
+            .expect("should find config");
+        assert!(matches!(
+            rc.certification,
+            crate::certification::CertificationMode::Skip
+        ));
+        assert_eq!(rc.ttl, Some(std::time::Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn get_route_config_returns_none_for_unknown() {
+        let root = RouteNode::new(NodeType::Static("".into()));
+        assert!(root.get_route_config("/nonexistent").is_none());
+    }
+
+    #[test]
+    fn set_route_config_replaces_existing() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/test", Method::GET, matched_get_handler);
+
+        let config1 = RouteConfig {
+            certification: crate::certification::CertificationMode::skip(),
+            ttl: None,
+            headers: vec![],
+        };
+        root.set_route_config("/test", config1);
+
+        let config2 = RouteConfig {
+            certification: crate::certification::CertificationMode::authenticated(),
+            ttl: Some(std::time::Duration::from_secs(300)),
+            headers: vec![],
+        };
+        root.set_route_config("/test", config2);
+
+        let rc = root.get_route_config("/test").expect("should find config");
+        assert!(matches!(
+            rc.certification,
+            crate::certification::CertificationMode::Full(_)
+        ));
+        assert_eq!(rc.ttl, Some(std::time::Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn routes_without_config_default_to_response_only() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/page", Method::GET, matched_get_handler);
+
+        // No set_route_config call — get_route_config returns None,
+        // and the caller should default to response_only.
+        assert!(root.get_route_config("/page").is_none());
+    }
+
+    #[test]
+    fn resolve_returns_correct_pattern_for_static_route() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/api/users", Method::GET, matched_get_handler);
+
+        match root.resolve("/api/users", &Method::GET) {
+            RouteResult::Found(_, _, _, pattern) => {
+                assert_eq!(pattern, "/api/users");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    #[test]
+    fn resolve_returns_correct_pattern_for_param_route() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/users/:id", Method::GET, matched_get_handler);
+
+        match root.resolve("/users/42", &Method::GET) {
+            RouteResult::Found(_, params, _, pattern) => {
+                assert_eq!(pattern, "/users/:id");
+                assert_eq!(params.get("id").unwrap(), "42");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    #[test]
+    fn resolve_returns_correct_pattern_for_wildcard_route() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/files/*", Method::GET, matched_get_handler);
+
+        match root.resolve("/files/a/b/c", &Method::GET) {
+            RouteResult::Found(_, params, _, pattern) => {
+                assert_eq!(pattern, "/files/*");
+                assert_eq!(params.get("*").unwrap(), "a/b/c");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    #[test]
+    fn resolve_returns_correct_pattern_for_root_route() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/", Method::GET, matched_get_handler);
+
+        match root.resolve("/", &Method::GET) {
+            RouteResult::Found(_, _, _, pattern) => {
+                assert_eq!(pattern, "/");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    #[test]
+    fn resolve_returns_correct_pattern_for_nested_param() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert(
+            "/posts/:postId/comments/:commentId",
+            Method::GET,
+            matched_get_handler,
+        );
+
+        match root.resolve("/posts/10/comments/20", &Method::GET) {
+            RouteResult::Found(_, params, _, pattern) => {
+                assert_eq!(pattern, "/posts/:postId/comments/:commentId");
+                assert_eq!(params.get("postId").unwrap(), "10");
+                assert_eq!(params.get("commentId").unwrap(), "20");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    #[test]
+    fn route_config_lookup_via_pattern() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/users/:id", Method::GET, matched_get_handler);
+
+        let config = RouteConfig {
+            certification: crate::certification::CertificationMode::skip(),
+            ttl: None,
+            headers: vec![],
+        };
+        root.set_route_config("/users/:id", config);
+
+        // Resolve actual path, get pattern, then look up config.
+        match root.resolve("/users/42", &Method::GET) {
+            RouteResult::Found(_, _, _, pattern) => {
+                let rc = root.get_route_config(&pattern).expect("should find config");
+                assert!(matches!(
+                    rc.certification,
+                    crate::certification::CertificationMode::Skip
+                ));
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
         }
     }
 }

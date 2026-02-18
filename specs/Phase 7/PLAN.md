@@ -105,19 +105,19 @@ Depends on: 7.1, 7.2
 
 #### 7.4A — Types and proc-macro crate
 
-- [ ] **7.4.1** Create `src/route_config.rs` with the `RouteConfig` struct (`certification: CertificationMode`, `ttl: Option<Duration>`, `headers: Vec<HeaderField>`) and its `Default` impl.
-- [ ] **7.4.2** Export `RouteConfig` from `src/lib.rs`.
-- [ ] **7.4.3** Create `macros/` proc-macro subcrate: `macros/Cargo.toml` (with `proc-macro2`, `quote`, `syn 2.0`), `macros/src/lib.rs` with the `#[route]` attribute macro. Parse `certification = "skip"` / `"response_only"` / `"authenticated"` presets and `certification = custom(...)` syntax. Generate a `__route_config()` function (not a static) returning `RouteConfig`.
-- [ ] **7.4.4** Add `macros` as a path dependency in the root `Cargo.toml`. Re-export `#[route]` from `src/lib.rs`.
-- [ ] **7.4.5** Verify: `cargo check` passes for both the macros crate and the main crate.
+- [x] **7.4.1** Create `src/route_config.rs` with the `RouteConfig` struct (`certification: CertificationMode`, `ttl: Option<Duration>`, `headers: Vec<HeaderField>`) and its `Default` impl.
+- [x] **7.4.2** Export `RouteConfig` from `src/lib.rs`.
+- [x] **7.4.3** Create `macros/` proc-macro subcrate: `macros/Cargo.toml` (with `proc-macro2`, `quote`, `syn 2.0`), `macros/src/lib.rs` with the `#[route]` attribute macro. Parse `certification = "skip"` / `"response_only"` / `"authenticated"` presets and `certification = custom(...)` syntax. Generate a `__route_config()` function (not a static) returning `RouteConfig`.
+- [x] **7.4.4** Add `macros` as a path dependency in the root `Cargo.toml`. Re-export `#[route]` from `src/lib.rs`.
+- [x] **7.4.5** Verify: `cargo check` passes for both the macros crate and the main crate.
 
 #### 7.4B — Build script and runtime integration
 
-- [ ] **7.4.6** Update `src/build.rs` to detect `#[route(...)]` attributes on handler functions and reference the generated `__route_config()` function in the route tree output.
-- [ ] **7.4.7** Update `src/router.rs` to store `RouteConfig` per route in `RouteNode`. Modify `RouteEntry` (or equivalent) to carry the config.
-- [ ] **7.4.8** Update `certify_dynamic_response` (or its replacement) to use the route's `RouteConfig.certification` mode when certifying — dispatching to `certify_asset` for Skip/ResponseOnly or `certify_dynamic_asset` for Full mode.
-- [ ] **7.4.9** Write unit tests: macro parses all preset strings, custom syntax produces correct `FullConfig`, routes without attribute default to `ResponseOnly`.
-- [ ] **7.4.10** Verify: `cargo check` and `cargo test` pass.
+- [x] **7.4.6** Update `src/build.rs` to detect `#[route(...)]` attributes on handler functions and reference the generated `__route_config()` function in the route tree output.
+- [x] **7.4.7** Update `src/router.rs` to store `RouteConfig` per route in `RouteNode`. Modify `RouteEntry` (or equivalent) to carry the config.
+- [x] **7.4.8** Update `certify_dynamic_response` (or its replacement) to use the route's `RouteConfig.certification` mode when certifying — dispatching to `certify_asset` for Skip/ResponseOnly or `certify_dynamic_asset` for Full mode.
+- [x] **7.4.9** Write unit tests: macro parses all preset strings, custom syntax produces correct `FullConfig`, routes without attribute default to `ResponseOnly`.
+- [x] **7.4.10** Verify: `cargo check` and `cargo test` pass.
 
 ---
 
