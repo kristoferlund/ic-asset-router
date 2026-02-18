@@ -1570,4 +1570,47 @@ mod tests {
             .map(|(_, v)| v.as_str());
         assert_eq!(custom, Some("value"));
     }
+
+    // ---- 8.6.3: Asset certification edge case tests ----
+
+    /// Re-certifying the same path replaces the old asset entry.
+    #[test]
+    fn certify_asset_duplicate_path_replaces() {
+        let mut router = make_router();
+
+        router
+            .certify_asset("/page", b"v1".to_vec(), default_config())
+            .unwrap();
+        let asset_v1 = router.get_asset("/page").unwrap();
+        assert_eq!(asset_v1.content, b"v1");
+
+        // Certify again with different content — should replace, not duplicate.
+        router
+            .certify_asset("/page", b"v2".to_vec(), default_config())
+            .unwrap();
+        let asset_v2 = router.get_asset("/page").unwrap();
+        assert_eq!(asset_v2.content, b"v2");
+
+        // Serve returns the new content.
+        let request = make_get_request("/page");
+        let (response, _, _) = router.serve_asset(&request).unwrap();
+        assert_eq!(response.body(), b"v2");
+    }
+
+    /// Deleting a nonexistent path is a no-op — no panic, no state corruption.
+    #[test]
+    fn delete_nonexistent_asset_is_noop() {
+        let mut router = make_router();
+        // Certify one asset to ensure the router is non-empty.
+        router
+            .certify_asset("/exists", b"data".to_vec(), default_config())
+            .unwrap();
+
+        // Deleting a path that was never certified should not panic.
+        router.delete_asset("/does-not-exist");
+
+        // The existing asset is unaffected.
+        assert!(router.contains_asset("/exists"));
+        assert!(!router.contains_asset("/does-not-exist"));
+    }
 }

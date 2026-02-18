@@ -575,6 +575,51 @@ mod tests {
         assert!(result.contains('\u{FFFD}'));
     }
 
+    // --- 8.6.1: url_decode edge case tests ---
+
+    #[test]
+    fn url_decode_trailing_percent() {
+        // Trailing '%' with no hex digits after it → pass through literally.
+        assert_eq!(url_decode("abc%"), "abc%");
+    }
+
+    #[test]
+    fn url_decode_only_percent() {
+        // A lone '%' at end of string → pass through literally.
+        assert_eq!(url_decode("%"), "%");
+    }
+
+    #[test]
+    fn url_decode_percent_one_hex_then_eof() {
+        // '%' followed by one valid hex char then EOF — malformed, the '%' is
+        // kept but the consumed hex char is lost (consistent with the existing
+        // malformed-passthrough behaviour documented in url_decode_malformed_passthrough).
+        assert_eq!(url_decode("abc%4"), "abc%");
+    }
+
+    #[test]
+    fn url_decode_null_byte() {
+        // "%00" decodes to a null byte (U+0000).
+        let result = url_decode("%00");
+        assert_eq!(result, "\0");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn url_decode_double_encoded() {
+        // "%2520" → single decode produces "%20" (not a space).
+        // The first pass decodes %25 → '%', leaving "20" as literal.
+        assert_eq!(url_decode("%2520"), "%20");
+    }
+
+    #[test]
+    fn url_decode_empty_string() {
+        let result = url_decode("");
+        assert_eq!(result, "");
+        // Empty string has no '%' or '+', so it should be zero-copy.
+        assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+    }
+
     // --- 6.8: parse_form_body tests ---
 
     #[test]

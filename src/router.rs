@@ -2109,4 +2109,118 @@ mod tests {
             "trie should store the raw percent-encoded wildcard value"
         );
     }
+
+    // ---- 8.6.2: Router trie edge case tests ----
+
+    /// Inserting two param routes with different names at the same level reuses
+    /// the first param child. The second insert's param name is silently ignored
+    /// because `get_or_create_node` only creates a param child if none exists.
+    #[test]
+    fn multiple_param_children_first_wins() {
+        fn handler_a(_: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+            response_with_text(&format!("a:{}", params.get("a").unwrap_or(&String::new())))
+        }
+        fn handler_b(_: HttpRequest, params: RouteParams) -> HttpResponse<'static> {
+            response_with_text(&format!("b:{}", params.get("b").unwrap_or(&String::new())))
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/items/:a", Method::GET, handler_a);
+        // Second insert reuses the existing param child (named "a"), so the
+        // handler is added to that same node — but the param name stays "a".
+        root.insert("/items/:b", Method::POST, handler_b);
+
+        // GET resolves and the param is captured under name "a" (first wins).
+        let (handler, params) = resolve_get(&root, "/items/42");
+        assert_eq!(params.get("a"), Some(&"42".to_string()));
+        assert_eq!(params.get("b"), None);
+        assert_eq!(body_str(handler(test_request("/items/42"), params)), "a:42");
+
+        // POST also uses param name "a" — the `:b` name from the second insert
+        // was silently discarded.
+        match root.resolve("/items/99", &Method::POST) {
+            RouteResult::Found(handler, params, _, _) => {
+                assert_eq!(params.get("a"), Some(&"99".to_string()));
+                assert_eq!(params.get("b"), None);
+                // handler_b tries to read "b" which is None, so prints "b:"
+                assert_eq!(body_str(handler(test_request("/items/99"), params)), "b:");
+            }
+            other => panic!("expected Found, got {}", route_result_name(&other)),
+        }
+    }
+
+    /// Wildcard route `/files/*` consumes all remaining segments.
+    #[test]
+    fn wildcard_consumes_remaining_segments() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/files/*", Method::GET, matched_folder);
+
+        // Single segment after /files/
+        let (_, params) = resolve_get(&root, "/files/a");
+        assert_eq!(params.get("*").unwrap(), "a");
+
+        // Multiple segments after /files/
+        let (_, params) = resolve_get(&root, "/files/a/b/c");
+        assert_eq!(params.get("*").unwrap(), "a/b/c");
+
+        // Deep nesting
+        let (_, params) = resolve_get(&root, "/files/a/b/c/d/e");
+        assert_eq!(params.get("*").unwrap(), "a/b/c/d/e");
+    }
+
+    /// Routes registered after a wildcard (e.g., `/files/*/edit`) are
+    /// unreachable because `_match` consumes all remaining segments at the
+    /// wildcard node without recursing further.
+    #[test]
+    fn post_wildcard_segments_unreachable() {
+        fn edit_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
+            response_with_text("edit")
+        }
+
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/files/*", Method::GET, matched_folder);
+        // This creates a child under the wildcard node, but _match never
+        // recurses into it — the wildcard greedily matches all segments.
+        root.insert("/files/*/edit", Method::GET, edit_handler);
+
+        // "/files/something/edit" is consumed by the wildcard, not the edit route.
+        let (handler, params) = resolve_get(&root, "/files/something/edit");
+        assert_eq!(params.get("*").unwrap(), "something/edit");
+        assert_eq!(
+            body_str(handler(test_request("/files/something/edit"), params)),
+            "folder"
+        );
+    }
+
+    /// Empty path "/" resolves to the root node's handler.
+    #[test]
+    fn empty_path_resolves_to_root() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/", Method::GET, matched_root);
+
+        let (handler, params) = resolve_get(&root, "/");
+        assert!(params.is_empty());
+        assert_eq!(body_str(handler(test_request("/"), params)), "root");
+    }
+
+    /// Trailing slash is normalized: "/about/" matches "/about".
+    #[test]
+    fn trailing_slash_normalization() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/about", Method::GET, matched_about);
+
+        // Without trailing slash
+        let (handler, _) = resolve_get(&root, "/about");
+        assert_eq!(
+            body_str(handler(test_request("/about"), HashMap::new())),
+            "about"
+        );
+
+        // With trailing slash — should match the same route
+        let (handler, _) = resolve_get(&root, "/about/");
+        assert_eq!(
+            body_str(handler(test_request("/about/"), HashMap::new())),
+            "about"
+        );
+    }
 }

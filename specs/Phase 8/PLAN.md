@@ -121,12 +121,12 @@ Depends on: 8.3 (uses `get_or_create_node`)
 
 Depends on: 8.1, 8.2, 8.3, 8.4, 8.5
 
-- [ ] **8.6.1** Add `url_decode` edge case tests in `src/context.rs`: trailing `%` (→ `"%"`), lone `%` at end of string, `%` followed by one valid hex char then EOF, `%00` (null byte), double-encoded `%2520` (→ `"%20"`, single decode only), empty string (→ `""`).
-- [ ] **8.6.2** Add router trie edge case tests in `src/router.rs`: multiple param children (first wins or error), wildcard consumes all remaining segments (`/files/*` matches `/files/a/b/c`), empty path resolves to root, trailing slash normalization (`/about/` matches `/about`).
-- [ ] **8.6.3** Add asset certification edge case tests in `src/asset_router.rs`: re-certifying same path replaces old entry, deleting nonexistent path is a no-op (no panic).
-- [ ] **8.6.4** Add config header dedup tests in `src/config.rs`: later header overrides earlier with same key, override is case-insensitive (`Content-Type` overrides `content-type`).
-- [ ] **8.6.5** Add `is_asset_expired` unit tests in `src/lib.rs` (after 8.1 extraction): asset with own TTL not expired, asset with own TTL expired, asset without TTL uses global config, asset without TTL and no global config never expires, static asset never expires.
-- [ ] **8.6.6** Verify: `cargo test` passes, all new tests green.
+- [x] **8.6.1** Add `url_decode` edge case tests in `src/context.rs`: trailing `%` (→ `"%"`), lone `%` at end of string, `%` followed by one valid hex char then EOF, `%00` (null byte), double-encoded `%2520` (→ `"%20"`, single decode only), empty string (→ `""`).
+- [x] **8.6.2** Add router trie edge case tests in `src/router.rs`: multiple param children (first wins or error), wildcard consumes all remaining segments (`/files/*` matches `/files/a/b/c`), empty path resolves to root, trailing slash normalization (`/about/` matches `/about`).
+- [x] **8.6.3** Add asset certification edge case tests in `src/asset_router.rs`: re-certifying same path replaces old entry, deleting nonexistent path is a no-op (no panic).
+- [x] **8.6.4** Add config header dedup tests in `src/config.rs`: later header overrides earlier with same key, override is case-insensitive (`Content-Type` overrides `content-type`).
+- [x] **8.6.5** Add `is_asset_expired` unit tests in `src/lib.rs` (after 8.1 extraction): asset with own TTL not expired, asset with own TTL expired, asset without TTL uses global config, asset without TTL and no global config never expires, static asset never expires.
+- [x] **8.6.6** Verify: `cargo test` passes, all new tests green.
 
 ---
 

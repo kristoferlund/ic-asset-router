@@ -1291,6 +1291,7 @@ mod tests {
     use super::*;
     use ic_http_certification::Method;
     use router::{NodeType, RouteNode, RouteParams};
+    use std::time::Duration;
 
     fn noop_handler(_: HttpRequest, _: RouteParams) -> HttpResponse<'static> {
         HttpResponse::builder()
@@ -1421,5 +1422,143 @@ mod tests {
             .with_body(b"hello" as &[u8])
             .build();
         assert_eq!(extract_content_type(&response), "text/plain");
+    }
+
+    // ---- 8.6.5: is_asset_expired unit tests ----
+
+    fn make_asset_router() -> asset_router::AssetRouter {
+        let tree = std::rc::Rc::new(std::cell::RefCell::new(
+            ic_http_certification::HttpCertificationTree::default(),
+        ));
+        asset_router::AssetRouter::with_tree(tree)
+    }
+
+    /// Dynamic asset with own TTL — not expired when now < certified_at + TTL.
+    #[test]
+    fn asset_with_own_ttl_not_expired() {
+        let mut router = make_asset_router();
+        let config = asset_router::AssetCertificationConfig {
+            certified_at: 1_000_000,
+            ttl: Some(Duration::from_secs(3600)),
+            dynamic: true,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        let asset = router.get_asset("/page").unwrap();
+
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        assert!(!is_asset_expired(
+            asset,
+            "/page",
+            1_000_000 + one_hour_ns - 1
+        ));
+    }
+
+    /// Dynamic asset with own TTL — expired when now >= certified_at + TTL.
+    #[test]
+    fn asset_with_own_ttl_expired() {
+        let mut router = make_asset_router();
+        let config = asset_router::AssetCertificationConfig {
+            certified_at: 1_000_000,
+            ttl: Some(Duration::from_secs(3600)),
+            dynamic: true,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        let asset = router.get_asset("/page").unwrap();
+
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        // At expiry boundary.
+        assert!(is_asset_expired(asset, "/page", 1_000_000 + one_hour_ns));
+        // After expiry.
+        assert!(is_asset_expired(
+            asset,
+            "/page",
+            1_000_000 + one_hour_ns + 1
+        ));
+    }
+
+    /// Dynamic asset without own TTL falls back to global config.
+    #[test]
+    fn asset_without_ttl_uses_global_config() {
+        let mut router = make_asset_router();
+        let config = asset_router::AssetCertificationConfig {
+            certified_at: 1_000_000,
+            ttl: None,
+            dynamic: true,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        let asset = router.get_asset("/page").unwrap();
+
+        // Set global config with a 1-hour default TTL.
+        ROUTER_CONFIG.with(|c| {
+            c.borrow_mut().cache_config.default_ttl = Some(Duration::from_secs(3600));
+        });
+
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        // Before expiry.
+        assert!(!is_asset_expired(
+            asset,
+            "/page",
+            1_000_000 + one_hour_ns - 1
+        ));
+        // At expiry.
+        assert!(is_asset_expired(asset, "/page", 1_000_000 + one_hour_ns));
+
+        // Clean up thread-local.
+        ROUTER_CONFIG.with(|c| {
+            c.borrow_mut().cache_config.default_ttl = None;
+        });
+    }
+
+    /// Dynamic asset without own TTL and no global config → never expires.
+    #[test]
+    fn asset_without_ttl_no_global_config_never_expires() {
+        let mut router = make_asset_router();
+        let config = asset_router::AssetCertificationConfig {
+            certified_at: 1_000_000,
+            ttl: None,
+            dynamic: true,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        let asset = router.get_asset("/page").unwrap();
+
+        // Ensure global config has no TTL.
+        ROUTER_CONFIG.with(|c| {
+            c.borrow_mut().cache_config.default_ttl = None;
+        });
+
+        // Even at u64::MAX, should not be expired.
+        assert!(!is_asset_expired(asset, "/page", u64::MAX));
+    }
+
+    /// Static asset (dynamic=false) never expires regardless of TTL settings.
+    #[test]
+    fn static_asset_never_expires() {
+        let mut router = make_asset_router();
+        // A static asset with a TTL — but is_asset_expired should still return false.
+        let config = asset_router::AssetCertificationConfig {
+            certified_at: 1_000_000,
+            ttl: Some(Duration::from_secs(1)),
+            dynamic: false,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        let asset = router.get_asset("/page").unwrap();
+
+        // Way past the TTL, but static assets never expire.
+        assert!(!is_asset_expired(asset, "/page", u64::MAX));
     }
 }

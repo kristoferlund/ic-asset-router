@@ -573,4 +573,48 @@ mod tests {
         );
         assert_eq!(cc_no_default.effective_ttl("/about"), None);
     }
+
+    // ---- 8.6.4: Config header dedup tests ----
+
+    /// Later header with the same key overrides the earlier one.
+    #[test]
+    fn merged_headers_later_overrides_earlier() {
+        let config = AssetConfig {
+            security_headers: SecurityHeaders::none(),
+            cache_control: CacheControl::default(),
+            cache_config: CacheConfig::default(),
+            custom_headers: vec![
+                ("x-custom".to_string(), "first".to_string()),
+                ("x-custom".to_string(), "second".to_string()),
+            ],
+        };
+        let merged = config.merged_headers(vec![]);
+        let custom: Vec<_> = merged.iter().filter(|(k, _)| k == "x-custom").collect();
+        assert_eq!(custom.len(), 1, "only one x-custom header should remain");
+        assert_eq!(custom[0].1, "second", "later value should win");
+    }
+
+    /// Override is case-insensitive: "Content-Type" overrides "content-type".
+    #[test]
+    fn merged_headers_case_insensitive_override() {
+        let config = AssetConfig {
+            security_headers: SecurityHeaders::none(),
+            cache_control: CacheControl::default(),
+            cache_config: CacheConfig::default(),
+            custom_headers: vec![("content-type".to_string(), "text/plain".to_string())],
+        };
+        // Additional header with different casing overrides custom.
+        let merged = config.merged_headers(vec![(
+            "Content-Type".to_string(),
+            "application/json".to_string(),
+        )]);
+        let ct: Vec<_> = merged
+            .iter()
+            .filter(|(k, _)| k.to_lowercase() == "content-type")
+            .collect();
+        assert_eq!(ct.len(), 1, "only one content-type header should remain");
+        assert_eq!(ct[0].1, "application/json", "additional header should win");
+        // The surviving header preserves the casing from the additional layer.
+        assert_eq!(ct[0].0, "Content-Type");
+    }
 }

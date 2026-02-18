@@ -149,3 +149,35 @@ None. All tasks compiled and passed tests on the first attempt. The refactor was
 - The URL-decoding of params and wildcards only applies in the *generated wrapper code* (`__route_tree.rs`), not in the trie itself. This means manually inserted routes (via `root.insert()` + direct handler registration) still receive raw encoded values in `RouteParams`. This is by design — the spec explicitly states "decoding happens in generated code, not in the trie."
 - The `param_child` field uses `Option<Box<RouteNode>>` rather than `Option<RouteNode>` to keep `RouteNode` a reasonable size and avoid infinite recursion in the type layout. The `Box` adds one indirection but the allocation is negligible since param children are rare.
 - The conflicting-param-directory warning fires at build time. At runtime, the trie's `get_or_create_node` silently reuses the existing `param_child` if one exists, so the first param name wins — consistent with the old `Vec<RouteNode>` behavior where `position()` returned the first match.
+
+## Session 6: Spec 8.6 — Test Coverage and Edge Cases
+
+### Accomplished
+
+All 6 tasks in spec 8.6 completed successfully:
+
+- **8.6.1**: Added 6 `url_decode` edge case tests in `src/context.rs`: trailing `%` → `"%"`, lone `%` → `"%"`, `%` followed by one hex char then EOF → `"%"` (consumed char lost, consistent with existing malformed-passthrough behavior), `%00` → null byte, double-encoded `%2520` → `"%20"` (single decode only), empty string → `""` (zero-copy borrowed).
+
+- **8.6.2**: Added 5 router trie edge case tests in `src/router.rs`: (a) `multiple_param_children_first_wins` — inserting `/:a` then `/:b` reuses the first param child, param name stays "a"; (b) `wildcard_consumes_remaining_segments` — `/files/*` matches `/files/a/b/c` with wildcard value `"a/b/c"`; (c) `post_wildcard_segments_unreachable` — `/files/*/edit` is never matched because the wildcard greedily consumes all segments; (d) `empty_path_resolves_to_root` — `"/"` resolves to root handler; (e) `trailing_slash_normalization` — `"/about/"` matches `"/about"`.
+
+- **8.6.3**: Added 2 asset certification edge case tests in `src/asset_router.rs`: (a) `certify_asset_duplicate_path_replaces` — re-certifying same path replaces the old entry, serve returns new content; (b) `delete_nonexistent_asset_is_noop` — deleting a never-certified path does not panic and leaves existing assets intact.
+
+- **8.6.4**: Added 2 config header dedup tests in `src/config.rs`: (a) `merged_headers_later_overrides_earlier` — two custom headers with the same key, only the later survives; (b) `merged_headers_case_insensitive_override` — `"Content-Type"` (additional) overrides `"content-type"` (custom), preserving the casing of the winner.
+
+- **8.6.5**: Added 5 `is_asset_expired` unit tests in `src/lib.rs`: (a) dynamic asset with own TTL not expired; (b) dynamic asset with own TTL expired (at boundary and after); (c) dynamic asset without TTL falls back to global `ROUTER_CONFIG.cache_config.effective_ttl`; (d) dynamic asset without TTL and no global config never expires; (e) static asset (dynamic=false) never expires even with a TTL set.
+
+- **8.6.6**: Full verification passed — `cargo check` (clean), `cargo test` (318 passed, 0 failed), `cargo doc --no-deps` (no warnings).
+
+### Obstacles
+
+- The `is_asset_expired` tests required constructing `CertifiedAsset` instances with valid `HttpCertificationTreeEntry` fields. Rather than trying to construct these manually (the tree entry type comes from an external crate with non-trivial construction), used an `AssetRouter` to certify assets and then retrieved them via `get_asset`. This is heavier but produces valid, realistic test assets.
+
+- The `Duration` type was not imported in the `lib.rs` test module. Added `use std::time::Duration`.
+
+### Out-of-scope observations
+
+- The `url_decode` function's malformed-passthrough behavior is lossy: when `%` is followed by one valid hex char then EOF (e.g., `"abc%4"`), it emits `%` but the consumed hex character is lost. The result is `"abc%"`, not `"abc%4"`. This is consistent with the existing documented behavior (`url_decode_malformed_passthrough` test) but could surprise users. No change made — this is the established contract.
+
+- The `certify_asset_duplicate_path_replaces` test revealed that re-certifying without deleting first inserts a new tree entry without removing the old one from `HttpCertificationTree`. The `assets` HashMap replaces the old `CertifiedAsset` (and its `tree_entry`), but the tree itself may retain a stale entry. This doesn't affect correctness because the new entry takes precedence during witness generation, but it's a minor memory inefficiency. Not addressed — it would require changing `certify_inner` to check for and delete existing entries, which is beyond the scope of a test-only spec.
+
+- With all 6 specs complete (8.1–8.6), Phase 8 is fully implemented. Total test count grew from 298 (end of spec 8.5) to 318 — 20 new tests added in this session.
