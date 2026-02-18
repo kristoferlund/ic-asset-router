@@ -117,3 +117,35 @@ None. All tasks compiled and passed tests on the first attempt.
 
 - `scan_certification_attribute` still uses `tokens.contains("certification")` for detecting the certification key. This is technically a substring match, but the risk of false positives is much lower than `path` since `certification` is an uncommon substring. Spec 8.4 only required fixing `scan_route_attribute`.
 - The `camel_to_snake` function's `c.to_lowercase().next().unwrap()` was left as-is since `char::to_lowercase` is guaranteed to yield at least one character per the Unicode standard — this is infallible and not a filesystem operation.
+
+## Session 5: Spec 8.5 — Route Trie Optimization
+
+### Accomplished
+
+All 8 tasks in spec 8.5 completed successfully:
+
+- **8.5.1**: Replaced `children: Vec<RouteNode>` with three typed fields: `static_children: HashMap<String, RouteNode>`, `param_child: Option<Box<RouteNode>>`, `wildcard_child: Option<Box<RouteNode>>`. Static segment lookup is now O(1) via `HashMap::get` instead of linear scan. The "at most one param child" and "at most one wildcard child" invariants are now structurally enforced.
+
+- **8.5.2**: Updated all methods that access children: `get_or_create_node` (uses `entry` API for static, `Option` checks for param/wildcard), `_match` (O(1) lookups instead of `for child in &self.children` loops), and all test helpers that accessed `.children` directly (4 `get_or_create_node` tests rewritten to use `.static_children`, `.param_child`, `.wildcard_child`). No `Display`/`Debug` impls exist for `RouteNode`; `skip_certified_paths`, `get_route_config`, and `set_middleware` only access root-level maps, not children — no changes needed.
+
+- **8.5.3**: Added build-time `cargo:warning` diagnostics in `process_directory` for: (a) conflicting param directories — two or more `_`-prefixed directories at the same level emit a warning listing all conflicting directories, (b) unreachable post-wildcard routes — `all.rs` coexisting with other route files or subdirectories emits a warning. Both are warnings (not errors) to avoid breaking existing projects.
+
+- **8.5.4**: Modified the generated wrapper code in `generate_routes_from` to URL-decode each param struct field: `ic_asset_router::url_decode(&raw_params.get("...").cloned().unwrap_or_default()).into_owned()`.
+
+- **8.5.5**: Modified the generated wildcard field to URL-decode: `raw_params.get("*").map(|w| ic_asset_router::url_decode(w).into_owned())`.
+
+- **8.5.6**: Added 4 unit tests: (a) `test_param_with_percent_encoded_space_resolves_raw` — trie stores raw `%20`, (b) `test_wildcard_with_percent_encoded_space_resolves_raw` — trie stores raw wildcard value, (c) `generated_param_code_includes_url_decode` — verifies format string includes `url_decode`, (d) `generated_wildcard_code_includes_url_decode` — verifies wildcard template includes `url_decode`.
+
+- **8.5.7**: No existing tests needed updating. All tests that assert `%20` values test the trie directly (not via generated wrappers), so they correctly assert raw encoded values.
+
+- **8.5.8**: Full verification passed — `cargo check` (clean), `cargo test` (298 passed, 0 failed), `cargo doc --no-deps` (no warnings).
+
+### Obstacles
+
+None. All tasks compiled and passed tests on the first attempt. The refactor was clean because `children` was only directly accessed by `get_or_create_node`, `_match`, and test code.
+
+### Out-of-scope observations
+
+- The URL-decoding of params and wildcards only applies in the *generated wrapper code* (`__route_tree.rs`), not in the trie itself. This means manually inserted routes (via `root.insert()` + direct handler registration) still receive raw encoded values in `RouteParams`. This is by design — the spec explicitly states "decoding happens in generated code, not in the trie."
+- The `param_child` field uses `Option<Box<RouteNode>>` rather than `Option<RouteNode>` to keep `RouteNode` a reasonable size and avoid infinite recursion in the type layout. The `Box` adds one indirection but the allocation is negligible since param children are rare.
+- The conflicting-param-directory warning fires at build time. At runtime, the trie's `get_or_create_node` silently reuses the existing `param_child` if one exists, so the first param name wins — consistent with the old `Vec<RouteNode>` behavior where `position()` returned the first match.

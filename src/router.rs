@@ -137,8 +137,16 @@ pub enum RouteResult {
 pub struct RouteNode {
     /// The type of this node (static segment, parameter, or wildcard).
     pub node_type: NodeType,
-    /// Child nodes forming the rest of the trie.
-    pub children: Vec<RouteNode>,
+    /// Static child nodes, keyed by segment name.
+    /// Lookup is O(1) via [`HashMap::get`].
+    pub static_children: HashMap<String, RouteNode>,
+    /// Optional single dynamic-parameter child (`:name` segments).
+    /// At most one param child is allowed per node — this is enforced
+    /// structurally by using `Option` instead of a collection.
+    pub param_child: Option<Box<RouteNode>>,
+    /// Optional single wildcard child (`*` segments).
+    /// At most one wildcard child is allowed per node.
+    pub wildcard_child: Option<Box<RouteNode>>,
     /// Method → handler map for this node. A handler is present only for
     /// methods that have been explicitly registered via [`insert`](Self::insert).
     pub handlers: HashMap<Method, HandlerFn>,
@@ -168,7 +176,9 @@ impl RouteNode {
     pub fn new(node_type: NodeType) -> Self {
         Self {
             node_type,
-            children: Vec::new(),
+            static_children: HashMap::new(),
+            param_child: None,
+            wildcard_child: None,
             handlers: HashMap::new(),
             result_handlers: HashMap::new(),
             middlewares: Vec::new(),
@@ -288,21 +298,25 @@ impl RouteNode {
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut current = self;
         for seg in segments {
-            let node_type = match seg {
-                "*" => NodeType::Wildcard,
-                s if s.starts_with(':') => NodeType::Param(s[1..].to_string()),
-                s => NodeType::Static(s.to_string()),
-            };
-            let idx = current
-                .children
-                .iter()
-                .position(|c| c.node_type == node_type);
-            match idx {
-                Some(i) => current = &mut current.children[i],
-                None => {
-                    current.children.push(RouteNode::new(node_type));
-                    let last = current.children.len() - 1;
-                    current = &mut current.children[last];
+            match seg {
+                "*" => {
+                    if current.wildcard_child.is_none() {
+                        current.wildcard_child = Some(Box::new(RouteNode::new(NodeType::Wildcard)));
+                    }
+                    current = current.wildcard_child.as_mut().unwrap();
+                }
+                s if s.starts_with(':') => {
+                    let name = s[1..].to_string();
+                    if current.param_child.is_none() {
+                        current.param_child = Some(Box::new(RouteNode::new(NodeType::Param(name))));
+                    }
+                    current = current.param_child.as_mut().unwrap();
+                }
+                s => {
+                    current = current
+                        .static_children
+                        .entry(s.to_string())
+                        .or_insert_with(|| RouteNode::new(NodeType::Static(s.to_string())));
                 }
             }
         }
@@ -397,18 +411,11 @@ impl RouteNode {
                 ));
             }
             // No handlers on this node — check for a wildcard child (empty wildcard match)
-            for child in &self.children {
-                if let NodeType::Wildcard = child.node_type {
-                    if !child.handlers.is_empty() {
-                        let mut params = HashMap::new();
-                        params.insert("*".to_string(), String::new());
-                        return Some((
-                            &child.handlers,
-                            &child.result_handlers,
-                            params,
-                            "/*".to_string(),
-                        ));
-                    }
+            if let Some(ref wc) = self.wildcard_child {
+                if !wc.handlers.is_empty() {
+                    let mut params = HashMap::new();
+                    params.insert("*".to_string(), String::new());
+                    return Some((&wc.handlers, &wc.result_handlers, params, "/*".to_string()));
                 }
             }
             return None;
@@ -419,25 +426,21 @@ impl RouteNode {
 
         debug_log!("head: {:?}", head);
 
-        // Static match
-        for child in &self.children {
-            if let NodeType::Static(ref s) = child.node_type {
-                if s == head {
-                    if let Some((h, rh, p, pattern)) = child._match(tail) {
-                        debug_log!("Static match: {:?}", segments);
-                        let full_pattern = if pattern == "/" {
-                            format!("/{s}")
-                        } else {
-                            format!("/{s}{pattern}")
-                        };
-                        return Some((h, rh, p, full_pattern));
-                    }
-                }
+        // Static match — O(1) via HashMap lookup
+        if let Some(child) = self.static_children.get(head) {
+            if let Some((h, rh, p, pattern)) = child._match(tail) {
+                debug_log!("Static match: {:?}", segments);
+                let full_pattern = if pattern == "/" {
+                    format!("/{head}")
+                } else {
+                    format!("/{head}{pattern}")
+                };
+                return Some((h, rh, p, full_pattern));
             }
         }
 
-        // Param match
-        for child in &self.children {
+        // Param match — O(1) via Option
+        if let Some(ref child) = self.param_child {
             if let NodeType::Param(ref name) = child.node_type {
                 if let Some((h, rh, mut p, pattern)) = child._match(tail) {
                     p.insert(name.clone(), head.to_string());
@@ -452,21 +455,19 @@ impl RouteNode {
             }
         }
 
-        // Wildcard match
-        for child in &self.children {
-            if let NodeType::Wildcard = child.node_type {
-                if !segments.is_empty() && !child.handlers.is_empty() {
-                    debug_log!("Wildcard match: {:?}", segments);
-                    let remaining = segments.join("/");
-                    let mut params = HashMap::new();
-                    params.insert("*".to_string(), remaining);
-                    return Some((
-                        &child.handlers,
-                        &child.result_handlers,
-                        params,
-                        "/*".to_string(),
-                    ));
-                }
+        // Wildcard match — O(1) via Option
+        if let Some(ref child) = self.wildcard_child {
+            if !segments.is_empty() && !child.handlers.is_empty() {
+                debug_log!("Wildcard match: {:?}", segments);
+                let remaining = segments.join("/");
+                let mut params = HashMap::new();
+                params.insert("*".to_string(), remaining);
+                return Some((
+                    &child.handlers,
+                    &child.result_handlers,
+                    params,
+                    "/*".to_string(),
+                ));
             }
         }
 
@@ -2002,23 +2003,20 @@ mod tests {
         let mut root = RouteNode::new(NodeType::Static("".into()));
         let _node = root.get_or_create_node("/api/v2/data");
 
-        // Root should have one child: "api"
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].node_type, NodeType::Static("api".into()));
+        // Root should have one static child: "api"
+        assert_eq!(root.static_children.len(), 1);
+        let api = root.static_children.get("api").expect("api child");
+        assert_eq!(api.node_type, NodeType::Static("api".into()));
 
-        // "api" should have one child: "v2"
-        assert_eq!(root.children[0].children.len(), 1);
-        assert_eq!(
-            root.children[0].children[0].node_type,
-            NodeType::Static("v2".into())
-        );
+        // "api" should have one static child: "v2"
+        assert_eq!(api.static_children.len(), 1);
+        let v2 = api.static_children.get("v2").expect("v2 child");
+        assert_eq!(v2.node_type, NodeType::Static("v2".into()));
 
-        // "v2" should have one child: "data"
-        assert_eq!(root.children[0].children[0].children.len(), 1);
-        assert_eq!(
-            root.children[0].children[0].children[0].node_type,
-            NodeType::Static("data".into())
-        );
+        // "v2" should have one static child: "data"
+        assert_eq!(v2.static_children.len(), 1);
+        let data = v2.static_children.get("data").expect("data child");
+        assert_eq!(data.node_type, NodeType::Static("data".into()));
     }
 
     /// get_or_create_node is idempotent: second call returns the same node
@@ -2039,8 +2037,9 @@ mod tests {
         );
 
         // Only one child chain should exist (no duplicates).
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].children.len(), 1);
+        assert_eq!(root.static_children.len(), 1);
+        let api = root.static_children.get("api").expect("api child");
+        assert_eq!(api.static_children.len(), 1);
     }
 
     /// get_or_create_node with root path "/" returns self.
@@ -2054,7 +2053,9 @@ mod tests {
         // The handler should be on the root node itself.
         assert!(root.handlers.contains_key(&Method::GET));
         // No children created for root path.
-        assert!(root.children.is_empty());
+        assert!(root.static_children.is_empty());
+        assert!(root.param_child.is_none());
+        assert!(root.wildcard_child.is_none());
     }
 
     /// get_or_create_node handles param and wildcard segments.
@@ -2064,22 +2065,48 @@ mod tests {
 
         let _node = root.get_or_create_node("/users/:id/files/*");
 
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].node_type, NodeType::Static("users".into()));
-        assert_eq!(root.children[0].children.len(), 1);
+        assert_eq!(root.static_children.len(), 1);
+        let users = root.static_children.get("users").expect("users child");
+        assert_eq!(users.node_type, NodeType::Static("users".into()));
+
+        let param = users.param_child.as_ref().expect("param child");
+        assert_eq!(param.node_type, NodeType::Param("id".into()));
+
+        assert_eq!(param.static_children.len(), 1);
+        let files = param.static_children.get("files").expect("files child");
+        assert_eq!(files.node_type, NodeType::Static("files".into()));
+
+        let wc = files.wildcard_child.as_ref().expect("wildcard child");
+        assert_eq!(wc.node_type, NodeType::Wildcard);
+    }
+
+    // ---- 8.5.6: Route trie preserves raw-encoded param values ----
+
+    /// Param route with `%20` in the URL resolves correctly and the raw param
+    /// value contains `%20` — decoding is the responsibility of generated wrapper
+    /// code, not the trie itself.
+    #[test]
+    fn test_param_with_percent_encoded_space_resolves_raw() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/posts/:id", Method::GET, matched_deep);
+        let (_, params) = resolve_get(&root, "/posts/hello%20world");
         assert_eq!(
-            root.children[0].children[0].node_type,
-            NodeType::Param("id".into())
+            params.get("id").unwrap(),
+            "hello%20world",
+            "trie should store the raw percent-encoded value; decoding happens in generated code"
         );
-        assert_eq!(root.children[0].children[0].children.len(), 1);
+    }
+
+    /// Wildcard route with `%20` in the URL preserves the raw encoded value.
+    #[test]
+    fn test_wildcard_with_percent_encoded_space_resolves_raw() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        root.insert("/files/*", Method::GET, matched_folder);
+        let (_, params) = resolve_get(&root, "/files/hello%20world/doc.pdf");
         assert_eq!(
-            root.children[0].children[0].children[0].node_type,
-            NodeType::Static("files".into())
-        );
-        assert_eq!(root.children[0].children[0].children[0].children.len(), 1);
-        assert_eq!(
-            root.children[0].children[0].children[0].children[0].node_type,
-            NodeType::Wildcard
+            params.get("*").unwrap(),
+            "hello%20world/doc.pdf",
+            "trie should store the raw percent-encoded wildcard value"
         );
     }
 }

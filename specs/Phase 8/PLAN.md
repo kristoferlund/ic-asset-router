@@ -106,14 +106,14 @@ Depends on: None (independent, but scheduled after 8.3 to avoid merge conflicts)
 
 Depends on: 8.3 (uses `get_or_create_node`)
 
-- [ ] **8.5.1** Replace `children: Vec<RouteNode>` in `src/router.rs` with three typed fields: `static_children: HashMap<String, RouteNode>`, `param_child: Option<Box<RouteNode>>`, `wildcard_child: Option<Box<RouteNode>>`.
-- [ ] **8.5.2** Update all methods that access children: `get_or_create_node` (from 8.3), `_match`, `_resolve`, `skip_certified_paths`, `get_route_config`, `set_middleware`, `Display`/`Debug` impls, and any test helpers.
-- [ ] **8.5.3** Add build-time `cargo:warning` diagnostics in `src/build.rs` for: (a) conflicting param directories at the same level (e.g., `_userId/` and `_postId/` as siblings), (b) `all.rs` in a directory that also has subdirectories (unreachable post-wildcard routes).
-- [ ] **8.5.4** URL-decode route parameters in generated wrapper code (`src/build.rs`): apply `ic_asset_router::url_decode(...).into_owned()` when populating each `Params` struct field.
-- [ ] **8.5.5** URL-decode wildcard value in generated `RouteContext` construction: `wildcard: raw_params.get("*").map(|w| ic_asset_router::url_decode(w).into_owned())`.
-- [ ] **8.5.6** Add unit tests in `src/router.rs`: param with `%20` resolves and the raw param value contains `%20` (decoding happens in generated code, not in the trie). Add build-script-level test confirming generated code includes `url_decode`.
-- [ ] **8.5.7** Update any existing tests that assert raw-encoded parameter values to expect decoded values where the generated wrapper is involved.
-- [ ] **8.5.8** Verify: `cargo check`, `cargo test`, and `cargo doc --no-deps` pass.
+- [x] **8.5.1** Replace `children: Vec<RouteNode>` in `src/router.rs` with three typed fields: `static_children: HashMap<String, RouteNode>`, `param_child: Option<Box<RouteNode>>`, `wildcard_child: Option<Box<RouteNode>>`.
+- [x] **8.5.2** Update all methods that access children: `get_or_create_node` (from 8.3), `_match`, `_resolve`, `skip_certified_paths`, `get_route_config`, `set_middleware`, `Display`/`Debug` impls, and any test helpers.
+- [x] **8.5.3** Add build-time `cargo:warning` diagnostics in `src/build.rs` for: (a) conflicting param directories at the same level (e.g., `_userId/` and `_postId/` as siblings), (b) `all.rs` in a directory that also has subdirectories (unreachable post-wildcard routes).
+- [x] **8.5.4** URL-decode route parameters in generated wrapper code (`src/build.rs`): apply `ic_asset_router::url_decode(...).into_owned()` when populating each `Params` struct field.
+- [x] **8.5.5** URL-decode wildcard value in generated `RouteContext` construction: `wildcard: raw_params.get("*").map(|w| ic_asset_router::url_decode(w).into_owned())`.
+- [x] **8.5.6** Add unit tests in `src/router.rs`: param with `%20` resolves and the raw param value contains `%20` (decoding happens in generated code, not in the trie). Add build-script-level test confirming generated code includes `url_decode`.
+- [x] **8.5.7** Update any existing tests that assert raw-encoded parameter values to expect decoded values where the generated wrapper is involved.
+- [x] **8.5.8** Verify: `cargo check`, `cargo test`, and `cargo doc --no-deps` pass.
 
 ---
 

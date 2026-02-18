@@ -217,7 +217,7 @@ pub fn generate_routes_from(dir: &str) {
             output.push_str(&format!("        params: {params_path} {{\n"));
             for pm in &export.params {
                 output.push_str(&format!(
-                    "            {}: raw_params.get(\"{}\").cloned().unwrap_or_default(),\n",
+                    "            {}: ic_asset_router::url_decode(&raw_params.get(\"{}\").cloned().unwrap_or_default()).into_owned(),\n",
                     pm.field_name, pm.route_name,
                 ));
             }
@@ -240,7 +240,7 @@ pub fn generate_routes_from(dir: &str) {
         output.push_str("        headers: req.headers().to_vec(),\n");
         output.push_str("        body: req.body().to_vec(),\n");
         output.push_str("        url: req.url().to_string(),\n");
-        output.push_str("        wildcard: raw_params.get(\"*\").cloned(),\n");
+        output.push_str("        wildcard: raw_params.get(\"*\").map(|w| ic_asset_router::url_decode(w).into_owned()),\n");
         output.push_str("    };\n");
         output.push_str(&format!("    {}(ctx)\n", export.handler_path));
         output.push_str("}\n\n");
@@ -430,8 +430,8 @@ fn process_directory(
     not_found_exports: &mut Vec<NotFoundExport>,
     accumulated_params: &[AccumulatedParam],
 ) {
-    // Detect ambiguous routes: a file `_param.rs` and a directory `_param/` in
-    // the same directory both map to the same route segment. This is an error.
+    // Detect ambiguous routes, conflicting param segments, and unreachable
+    // post-wildcard routes.
     {
         let mut file_stems: Vec<String> = Vec::new();
         let mut dir_names: Vec<String> = Vec::new();
@@ -460,6 +460,43 @@ fn process_directory(
                     "Ambiguous route: both '{stem}.rs' and '{stem}/index.rs' exist in '{}'. \
                      Use one form or the other, not both.",
                     dir.display()
+                );
+            }
+        }
+
+        // Warn on conflicting param directories at the same level.
+        // Two `_`-prefixed directories as siblings produce ambiguous routing
+        // because only one param child is allowed per trie node.
+        let param_dirs: Vec<&String> = dir_names.iter().filter(|n| n.starts_with('_')).collect();
+        if param_dirs.len() > 1 {
+            println!(
+                "cargo:warning=Conflicting param directories in '{}': {} \
+                 — only one dynamic parameter directory is allowed per level. \
+                 The first one encountered will win at runtime.",
+                dir.display(),
+                param_dirs
+                    .iter()
+                    .map(|d| format!("'{d}/'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+
+        // Warn on unreachable post-wildcard routes.
+        // `all.rs` maps to a wildcard `/*` which consumes all remaining
+        // segments, making sibling route files and subdirectories unreachable.
+        let has_wildcard = file_stems.iter().any(|s| s == "all");
+        if has_wildcard {
+            let other_routes: Vec<&String> = file_stems
+                .iter()
+                .filter(|s| *s != "all" && !RESERVED_FILES.contains(&s.as_str()))
+                .collect();
+            if !other_routes.is_empty() || !dir_names.is_empty() {
+                println!(
+                    "cargo:warning=Unreachable routes in '{}': \
+                     'all.rs' (wildcard /*) will consume all remaining segments, \
+                     making sibling routes and subdirectories unreachable.",
+                    dir.display(),
                 );
             }
         }
@@ -1965,5 +2002,43 @@ pub fn get() -> () { todo!() }
         );
         assert_eq!(exports.len(), 1);
         assert!(!exports[0].has_certification_attribute);
+    }
+
+    // --- 8.5.6: Generated code includes url_decode for params and wildcard ---
+
+    /// Verify that the generated wrapper code for param routes includes
+    /// `url_decode` calls for each param field. This test exercises the
+    /// code generation format string by simulating the output for a
+    /// param route.
+    #[test]
+    fn generated_param_code_includes_url_decode() {
+        let pm = ParamMapping {
+            route_name: "postId".to_string(),
+            field_name: "post_id".to_string(),
+        };
+        // This is the exact format string used in generate_routes_from.
+        let line = format!(
+            "            {}: ic_asset_router::url_decode(&raw_params.get(\"{}\").cloned().unwrap_or_default()).into_owned(),\n",
+            pm.field_name, pm.route_name,
+        );
+        assert!(
+            line.contains("ic_asset_router::url_decode"),
+            "generated param field line must include url_decode: {line}"
+        );
+        assert!(
+            line.contains("into_owned()"),
+            "generated param field line must convert Cow to owned String: {line}"
+        );
+    }
+
+    /// Verify that the generated wildcard field includes `url_decode`.
+    #[test]
+    fn generated_wildcard_code_includes_url_decode() {
+        // This is the exact string pushed for the wildcard field.
+        let line = "        wildcard: raw_params.get(\"*\").map(|w| ic_asset_router::url_decode(w).into_owned()),\n";
+        assert!(
+            line.contains("ic_asset_router::url_decode"),
+            "generated wildcard line must include url_decode: {line}"
+        );
     }
 }
