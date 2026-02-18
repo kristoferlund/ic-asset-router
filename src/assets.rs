@@ -13,7 +13,7 @@ use crate::{mime::get_mime_type, ASSET_ROUTER, ROUTER_CONFIG};
 /// certification mode, use [`certify_assets_with_mode`].
 ///
 /// Call this during canister initialization (e.g. in `init` and
-/// `post_upgrade`) after calling [`set_asset_config`](crate::set_asset_config).
+/// `post_upgrade`) after calling [`setup`](crate::setup).
 ///
 /// # Example
 ///

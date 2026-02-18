@@ -251,7 +251,7 @@ impl std::error::Error for AssetRouterError {}
 /// Unified asset store with per-asset certification modes.
 ///
 /// Stores both static assets (embedded at compile time via
-/// [`certify_assets`](crate::certify_assets)) and dynamic assets
+/// [`certify_assets`](crate::assets::certify_assets)) and dynamic assets
 /// (generated at runtime via [`certify_dynamic_asset`](Self::certify_dynamic_asset)).
 /// All assets share a single [`HttpCertificationTree`] so the canister
 /// exposes one consistent root hash.
