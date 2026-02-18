@@ -257,8 +257,8 @@ impl RouteNode {
     /// a lone `*` segment is a catch-all wildcard. If a handler already
     /// exists for the same path and method it is silently replaced.
     pub fn insert(&mut self, path: &str, method: Method, handler: HandlerFn) {
-        let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
-        self._insert(&segments, method, handler);
+        let node = self.get_or_create_node(path);
+        node.handlers.insert(method, handler);
     }
 
     /// Register a `HandlerResultFn` for the given path and method.
@@ -271,56 +271,42 @@ impl RouteNode {
     /// path and middleware chain. The `HandlerResultFn` is only checked in
     /// `http_request_update`.
     pub fn insert_result(&mut self, path: &str, method: Method, handler: HandlerResultFn) {
-        let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
-        self._insert_result(&segments, method, handler);
+        let node = self.get_or_create_node(path);
+        node.result_handlers.insert(method, handler);
     }
 
-    fn _insert(&mut self, segments: &[&str], method: Method, handler: HandlerFn) {
-        if segments.is_empty() {
-            self.handlers.insert(method, handler);
-            return;
-        }
-
-        let node_type = match segments[0] {
-            "*" => NodeType::Wildcard,
-            s if s.starts_with(':') => NodeType::Param(s[1..].to_string()),
-            s => NodeType::Static(s.to_string()),
-        };
-
-        let child = self.children.iter_mut().find(|c| c.node_type == node_type);
-
-        match child {
-            Some(c) => c._insert(&segments[1..], method, handler),
-            None => {
-                let mut new_node = RouteNode::new(node_type);
-                new_node._insert(&segments[1..], method, handler);
-                self.children.push(new_node);
+    /// Walk (or create) the trie path for the given segments, returning
+    /// a mutable reference to the terminal node.
+    ///
+    /// Each segment is parsed into a [`NodeType`]: `"*"` becomes
+    /// [`Wildcard`](NodeType::Wildcard), a leading `:` becomes
+    /// [`Param`](NodeType::Param), and anything else becomes
+    /// [`Static`](NodeType::Static). Intermediate nodes are created on
+    /// demand. Calling this twice with the same path returns the same
+    /// node (idempotent).
+    fn get_or_create_node(&mut self, path: &str) -> &mut RouteNode {
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut current = self;
+        for seg in segments {
+            let node_type = match seg {
+                "*" => NodeType::Wildcard,
+                s if s.starts_with(':') => NodeType::Param(s[1..].to_string()),
+                s => NodeType::Static(s.to_string()),
+            };
+            let idx = current
+                .children
+                .iter()
+                .position(|c| c.node_type == node_type);
+            match idx {
+                Some(i) => current = &mut current.children[i],
+                None => {
+                    current.children.push(RouteNode::new(node_type));
+                    let last = current.children.len() - 1;
+                    current = &mut current.children[last];
+                }
             }
         }
-    }
-
-    fn _insert_result(&mut self, segments: &[&str], method: Method, handler: HandlerResultFn) {
-        if segments.is_empty() {
-            self.result_handlers.insert(method, handler);
-            return;
-        }
-
-        let node_type = match segments[0] {
-            "*" => NodeType::Wildcard,
-            s if s.starts_with(':') => NodeType::Param(s[1..].to_string()),
-            s => NodeType::Static(s.to_string()),
-        };
-
-        let child = self.children.iter_mut().find(|c| c.node_type == node_type);
-
-        match child {
-            Some(c) => c._insert_result(&segments[1..], method, handler),
-            None => {
-                let mut new_node = RouteNode::new(node_type);
-                new_node._insert_result(&segments[1..], method, handler);
-                self.children.push(new_node);
-            }
-        }
+        current
     }
 
     /// Execute the middleware chain for a resolved route.
@@ -2006,5 +1992,94 @@ mod tests {
             }
             other => panic!("expected Found, got {}", route_result_name(&other)),
         }
+    }
+
+    // ---- 8.3.3: get_or_create_node tests ----
+
+    /// get_or_create_node creates intermediate nodes on first call.
+    #[test]
+    fn test_get_or_create_node_creates_intermediate_nodes() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+        let _node = root.get_or_create_node("/api/v2/data");
+
+        // Root should have one child: "api"
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].node_type, NodeType::Static("api".into()));
+
+        // "api" should have one child: "v2"
+        assert_eq!(root.children[0].children.len(), 1);
+        assert_eq!(
+            root.children[0].children[0].node_type,
+            NodeType::Static("v2".into())
+        );
+
+        // "v2" should have one child: "data"
+        assert_eq!(root.children[0].children[0].children.len(), 1);
+        assert_eq!(
+            root.children[0].children[0].children[0].node_type,
+            NodeType::Static("data".into())
+        );
+    }
+
+    /// get_or_create_node is idempotent: second call returns the same node
+    /// without creating duplicates.
+    #[test]
+    fn test_get_or_create_node_idempotent() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+
+        // First call creates nodes.
+        let node = root.get_or_create_node("/api/users");
+        node.handlers.insert(Method::GET, matched_get_handler);
+
+        // Second call should find the existing node.
+        let node2 = root.get_or_create_node("/api/users");
+        assert!(
+            node2.handlers.contains_key(&Method::GET),
+            "second call should return the same node with the handler intact"
+        );
+
+        // Only one child chain should exist (no duplicates).
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].children.len(), 1);
+    }
+
+    /// get_or_create_node with root path "/" returns self.
+    #[test]
+    fn test_get_or_create_node_root_path() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+
+        let node = root.get_or_create_node("/");
+        node.handlers.insert(Method::GET, matched_get_handler);
+
+        // The handler should be on the root node itself.
+        assert!(root.handlers.contains_key(&Method::GET));
+        // No children created for root path.
+        assert!(root.children.is_empty());
+    }
+
+    /// get_or_create_node handles param and wildcard segments.
+    #[test]
+    fn test_get_or_create_node_param_and_wildcard() {
+        let mut root = RouteNode::new(NodeType::Static("".into()));
+
+        let _node = root.get_or_create_node("/users/:id/files/*");
+
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].node_type, NodeType::Static("users".into()));
+        assert_eq!(root.children[0].children.len(), 1);
+        assert_eq!(
+            root.children[0].children[0].node_type,
+            NodeType::Param("id".into())
+        );
+        assert_eq!(root.children[0].children[0].children.len(), 1);
+        assert_eq!(
+            root.children[0].children[0].children[0].node_type,
+            NodeType::Static("files".into())
+        );
+        assert_eq!(root.children[0].children[0].children[0].children.len(), 1);
+        assert_eq!(
+            root.children[0].children[0].children[0].children[0].node_type,
+            NodeType::Wildcard
+        );
     }
 }

@@ -62,3 +62,31 @@ None. The extractions were mechanical and each task compiled and passed tests on
 - The `http_request` `true` branch had a duplicate comment block explaining Full certification mode (two 3-line comment blocks saying the same thing). Removed the redundant one during cleanup.
 - `http_request_update` was initially at 68 lines after all extractions. Condensed verbose comments to bring it under 60.
 - `serve_uncertified` and `serve_skip_mode` are structurally identical (both delegate to `attach_skip_certification`). Spec 8.1.4 in the PLAN explicitly calls for separate functions, which is reasonable since they have different semantic meanings (user-disabled certification vs. route-configured skip mode).
+
+## Session 3: Spec 8.3 — Deduplicate Router and Asset Router Internals
+
+### Accomplished
+
+All 6 tasks in spec 8.3 completed successfully:
+
+- **8.3.1**: Extracted `get_or_create_node(&mut self, path: &str) -> &mut RouteNode` as a private method in `src/router.rs`. Uses iterative trie traversal (not recursive) — splits the path into segments, walks or creates intermediate nodes, and returns a mutable reference to the terminal node. Handles static, param (`:name`), and wildcard (`*`) segments.
+
+- **8.3.2**: Rewrote `insert` and `insert_result` as 2-line thin wrappers that call `get_or_create_node` then insert into `handlers` or `result_handlers` respectively. Removed the old recursive `_insert` and `_insert_result` methods entirely (~46 lines of duplicated code eliminated).
+
+- **8.3.3**: Added 4 unit tests for `get_or_create_node`: (a) creates intermediate nodes on first call (verifies full chain), (b) idempotent — second call returns the same node without creating duplicates, (c) root path `/` returns self with no children created, (d) handles param and wildcard segment types correctly.
+
+- **8.3.4**: Extracted `certify_inner(path, body, response_for_cert, request, config)` as a private method in `src/asset_router.rs`. Unifies the shared certification logic: resolve content type, build CEL expression, build or augment the response for certification, create certification (with or without request), build tree entry, insert into tree, build encodings map, construct `CertifiedAsset`, register fallbacks/aliases. The `response_for_cert: Option<&HttpResponse>` parameter distinguishes static vs dynamic paths.
+
+- **8.3.5**: Rewrote `certify_asset` as a 4-line wrapper (Full mode guard + delegation to `certify_inner`) and `certify_dynamic_asset` as a 7-line wrapper (body extraction + delegation). Both well under the 15-line limit.
+
+- **8.3.6**: Full verification passed — `cargo check` (clean), `cargo test` (289 passed, 0 failed), `cargo doc --no-deps` (no warnings).
+
+### Obstacles
+
+- Initial edit left a duplicate `insert_result` method (the original was in a different position than expected in the file). Fixed by removing the leftover original.
+- The old `_insert` and `_insert_result` recursive method bodies also survived as dead code after the first edit pass. Removed them in a second cleanup.
+
+### Out-of-scope observations
+
+- `insert` and `insert_result` used to do their own `path.split('/').filter(...)` before delegating to the recursive `_insert`/`_insert_result`. Now `get_or_create_node` handles the split internally, making the public methods simpler.
+- The `certify_inner` unification exposed that `certify_dynamic_asset` previously didn't use `config.encodings` at all (only Identity from response body). With the unified code path, dynamic assets now correctly pick up any pre-compressed encodings passed in `config.encodings`, though no callers currently pass them for dynamic assets.

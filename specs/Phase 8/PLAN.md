@@ -80,12 +80,12 @@ This is the largest spec. Split into two sub-sections: query path and update pat
 
 Depends on: 8.1
 
-- [ ] **8.3.1** Extract `get_or_create_node(&mut self, path: &str) -> &mut RouteNode` in `src/router.rs` — the shared trie traversal that parses path segments and creates intermediate nodes.
-- [ ] **8.3.2** Rewrite `_insert` and `_insert_result` as thin wrappers (≤5 lines each) that call `get_or_create_node` then insert into the appropriate `HashMap`.
-- [ ] **8.3.3** Add unit test for `get_or_create_node`: creates intermediate nodes on first call, returns same node on second call (idempotent), handles root path `/`.
-- [ ] **8.3.4** Extract `certify_inner(...)` in `src/asset_router.rs` — the shared certification logic (build CEL expression, build response, create tree entry, insert into tree, construct CertifiedAsset, register fallbacks/aliases).
-- [ ] **8.3.5** Rewrite `certify_asset` and `certify_dynamic_asset` as thin wrappers (≤15 lines each) that set up parameters then delegate to `certify_inner`.
-- [ ] **8.3.6** Verify: `cargo check` and `cargo test` pass.
+- [x] **8.3.1** Extract `get_or_create_node(&mut self, path: &str) -> &mut RouteNode` in `src/router.rs` — the shared trie traversal that parses path segments and creates intermediate nodes.
+- [x] **8.3.2** Rewrite `_insert` and `_insert_result` as thin wrappers (≤5 lines each) that call `get_or_create_node` then insert into the appropriate `HashMap`.
+- [x] **8.3.3** Add unit test for `get_or_create_node`: creates intermediate nodes on first call, returns same node on second call (idempotent), handles root path `/`.
+- [x] **8.3.4** Extract `certify_inner(...)` in `src/asset_router.rs` — the shared certification logic (build CEL expression, build response, create tree entry, insert into tree, construct CertifiedAsset, register fallbacks/aliases).
+- [x] **8.3.5** Rewrite `certify_asset` and `certify_dynamic_asset` as thin wrappers (≤15 lines each) that set up parameters then delegate to `certify_inner`.
+- [x] **8.3.6** Verify: `cargo check` and `cargo test` pass.
 
 ---
 

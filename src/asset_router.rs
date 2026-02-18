@@ -451,47 +451,67 @@ fn create_certification_with_request(
 // ---------------------------------------------------------------------------
 
 impl AssetRouter {
-    /// Certify a single asset (static or dynamic).
+    /// Shared certification logic for both static and dynamic assets.
     ///
-    /// For `Skip` and `ResponseOnly` modes, this is the standard entry point.
-    /// For `Full` mode, use [`certify_dynamic_asset`](Self::certify_dynamic_asset)
-    /// which accepts the request.
-    pub fn certify_asset(
+    /// - `response_for_cert`: when `Some`, the caller provides the response
+    ///   (dynamic path — the CEL header is added to a copy). When `None`, the
+    ///   method builds one from `body` + config headers (static path).
+    /// - `request`: when `Some`, uses request-aware certification (Full mode).
+    ///   When `None`, uses response-only or skip certification.
+    fn certify_inner(
         &mut self,
         path: &str,
-        content: Vec<u8>,
+        body: Vec<u8>,
+        response_for_cert: Option<&HttpResponse<'static>>,
+        request: Option<&HttpRequest>,
         config: AssetCertificationConfig,
     ) -> Result<(), AssetRouterError> {
-        if matches!(&config.mode, CertificationMode::Full(_)) {
-            return Err(AssetRouterError::FullModeRequiresRequest);
-        }
-
         let content_type = config
             .content_type
             .unwrap_or_else(|| get_mime_type(path).to_string());
 
         let cel_str = build_cel_expression_string(&config.mode);
 
-        // Build the response for certification.
-        let mut all_headers = vec![
-            ("content-type".to_string(), content_type.clone()),
-            (
-                CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
-                cel_str.clone(),
-            ),
-        ];
-        for (name, value) in &config.headers {
-            all_headers.push((name.clone(), value.clone()));
-        }
+        // Build or augment the response used for certification.
+        let cert_response = match response_for_cert {
+            None => {
+                // Static path: build from body + config headers.
+                let mut all_headers = vec![
+                    ("content-type".to_string(), content_type.clone()),
+                    (
+                        CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+                        cel_str.clone(),
+                    ),
+                ];
+                for (name, value) in &config.headers {
+                    all_headers.push((name.clone(), value.clone()));
+                }
+                HttpResponse::builder()
+                    .with_status_code(config.status_code)
+                    .with_headers(all_headers)
+                    .with_body(body.as_slice())
+                    .build()
+            }
+            Some(resp) => {
+                // Dynamic path: add CEL header to a copy of the provided response.
+                let mut cert_headers: Vec<HeaderField> = resp.headers().to_vec();
+                cert_headers.push((
+                    CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+                    cel_str.clone(),
+                ));
+                HttpResponse::builder()
+                    .with_status_code(resp.status_code())
+                    .with_headers(cert_headers)
+                    .with_body(Cow::<[u8]>::Owned(resp.body().to_vec()))
+                    .build()
+            }
+        };
 
-        let response = HttpResponse::builder()
-            .with_status_code(config.status_code)
-            .with_headers(all_headers)
-            .with_body(content.as_slice())
-            .build();
-
-        // Create certification based on mode.
-        let certification = create_certification(&config.mode, &response)?;
+        // Create certification.
+        let certification = match request {
+            Some(req) => create_certification_with_request(&config.mode, req, &cert_response)?,
+            None => create_certification(&config.mode, &cert_response)?,
+        };
 
         // Create tree entry and insert. We pass an owned String so the
         // `HttpCertificationPath` stores a `Cow::Owned`, making the
@@ -510,14 +530,14 @@ impl AssetRouter {
 
         // Build encodings map.
         let mut encodings = HashMap::new();
-        encodings.insert(AssetEncoding::Identity, content.clone());
+        encodings.insert(AssetEncoding::Identity, body.clone());
         for (encoding, encoded_content) in config.encodings {
             encodings.insert(encoding, encoded_content);
         }
 
         // Store asset.
         let asset = CertifiedAsset {
-            content,
+            content: body,
             encodings,
             content_type,
             status_code: config.status_code,
@@ -548,6 +568,23 @@ impl AssetRouter {
         Ok(())
     }
 
+    /// Certify a single asset (static or dynamic).
+    ///
+    /// For `Skip` and `ResponseOnly` modes, this is the standard entry point.
+    /// For `Full` mode, use [`certify_dynamic_asset`](Self::certify_dynamic_asset)
+    /// which accepts the request.
+    pub fn certify_asset(
+        &mut self,
+        path: &str,
+        content: Vec<u8>,
+        config: AssetCertificationConfig,
+    ) -> Result<(), AssetRouterError> {
+        if matches!(&config.mode, CertificationMode::Full(_)) {
+            return Err(AssetRouterError::FullModeRequiresRequest);
+        }
+        self.certify_inner(path, content, None, None, config)
+    }
+
     /// Certify a dynamic asset with any mode, including `Full`.
     ///
     /// Unlike `certify_asset`, this takes the original request so that
@@ -560,68 +597,13 @@ impl AssetRouter {
         response: &HttpResponse<'static>,
         config: AssetCertificationConfig,
     ) -> Result<(), AssetRouterError> {
-        let cel_str = build_cel_expression_string(&config.mode);
-
-        // The upstream library requires the IC-CertificateExpression header
-        // on the response for response_only and full certification. We build
-        // a certification copy of the response with this header added.
-        let mut cert_headers: Vec<HeaderField> = response.headers().to_vec();
-        cert_headers.push((
-            CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
-            cel_str.clone(),
-        ));
-        let cert_response = HttpResponse::builder()
-            .with_status_code(response.status_code())
-            .with_headers(cert_headers)
-            .with_body(Cow::<[u8]>::Owned(response.body().to_vec()))
-            .build();
-
-        let certification =
-            create_certification_with_request(&config.mode, request, &cert_response)?;
-        // For fallback assets, use a wildcard path so the certification is
-        // valid for any request URL under the scope.
-        let tree_path = if let Some(ref scope) = config.fallback_for {
-            HttpCertificationPath::wildcard(scope.to_string())
-        } else {
-            HttpCertificationPath::exact(path.to_string())
-        };
-        let tree_entry = HttpCertificationTreeEntry::new(tree_path, certification);
-        self.tree.borrow_mut().insert(&tree_entry);
-
-        let content_type = config
-            .content_type
-            .unwrap_or_else(|| get_mime_type(path).to_string());
-
-        let asset = CertifiedAsset {
-            content: response.body().to_vec(),
-            encodings: HashMap::from([(AssetEncoding::Identity, response.body().to_vec())]),
-            content_type,
-            status_code: config.status_code,
-            headers: config.headers,
-            certification_mode: config.mode,
-            cel_expression: cel_str,
-            tree_entry,
-            fallback_scope: config.fallback_for.clone(),
-            aliases: config.aliases.clone(),
-            certified_at: config.certified_at,
-            ttl: config.ttl,
-            dynamic: config.dynamic,
-        };
-
-        self.assets.insert(path.to_string(), asset);
-
-        // Register fallback if specified.
-        if let Some(scope) = config.fallback_for {
-            self.fallbacks.push((scope, path.to_string()));
-            self.fallbacks.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        }
-
-        // Register aliases.
-        for alias in config.aliases {
-            self.aliases.insert(alias, path.to_string());
-        }
-
-        Ok(())
+        self.certify_inner(
+            path,
+            response.body().to_vec(),
+            Some(response),
+            Some(request),
+            config,
+        )
     }
 
     /// Serve an asset for the given request.
