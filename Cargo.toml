@@ -1,6 +1,6 @@
 [package]
 name = "ic-asset-router"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "File-based HTTP routing with IC response certification for Internet Computer canisters"
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["web-programming"]
 [lib]
 
 [dependencies]
-ic-asset-router-macros = { path = "macros", version = "0.1.0" }
+ic-asset-router-macros = { path = "macros", version = "0.1.1" }
 ic-cdk = "0.18.7"
 ic-certification = "3.1"
 ic-http-certification = "3.1"
