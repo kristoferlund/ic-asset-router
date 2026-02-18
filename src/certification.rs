@@ -14,46 +14,126 @@
 /// - [`CertificationMode::Full`] — Both request and response are certified.
 ///   Required when the response depends on request headers (e.g.,
 ///   `Authorization`, `Accept`).
+///
+/// # Choosing a Mode
+///
+/// **Response-only (default)** is correct for 90% of routes — use it when
+/// the response depends only on the URL path and the canister state.
+///
+/// **Skip** is appropriate for health-check or status endpoints where
+/// tampering has no security impact and maximum performance is desired.
+///
+/// **Full** (or the [`CertificationMode::authenticated`] preset) is
+/// required when the response depends on *who* is making the request
+/// (e.g., the `Authorization` header). Without full certification a
+/// malicious replica could serve one user's response to another.
 
 /// Certification mode for HTTP responses.
 ///
 /// Determines which parts of the HTTP request/response are hashed and
-/// certified. The default mode is [`CertificationMode::ResponseOnly`] with
-/// a wildcard header inclusion and standard exclusions.
+/// certified by the Internet Computer's boundary nodes. The default mode
+/// is [`CertificationMode::ResponseOnly`] with wildcard header inclusion
+/// and standard exclusions.
+///
+/// # When to Use Each Variant
+///
+/// | Variant | Use when | Example |
+/// |---------|----------|---------|
+/// | [`Skip`](Self::Skip) | Tampering has no security impact | Health checks, `/ping` |
+/// | [`ResponseOnly`](Self::ResponseOnly) | Same URL always returns same content | Static pages, blog posts |
+/// | [`Full`](Self::Full) | Response depends on request identity | Authenticated APIs |
+///
+/// # Examples
+///
+/// ```
+/// use ic_asset_router::CertificationMode;
+///
+/// // Default: response-only (recommended for most routes)
+/// let mode = CertificationMode::default();
+/// assert!(matches!(mode, CertificationMode::ResponseOnly(_)));
+///
+/// // Skip: no certification overhead
+/// let mode = CertificationMode::skip();
+/// assert!(matches!(mode, CertificationMode::Skip));
+///
+/// // Authenticated: full certification with Authorization header
+/// let mode = CertificationMode::authenticated();
+/// assert!(matches!(mode, CertificationMode::Full(_)));
+/// ```
 #[derive(Clone, Debug)]
 pub enum CertificationMode {
-    /// No certification. Response is served without cryptographic verification.
-    /// Fastest option. Use for public endpoints where tampering risk is
-    /// acceptable.
+    /// No certification. The response is served without cryptographic
+    /// verification. This is the fastest mode — use it for public endpoints
+    /// where tampering risk is acceptable (health checks, `/ping`).
+    ///
+    /// **Security note:** A malicious replica can return arbitrary data for
+    /// skip-certified paths. Only use this for data that is publicly
+    /// verifiable or has no security value.
     Skip,
 
-    /// Only the response is certified. Request details are not verified.
-    /// Good for static assets where the response depends only on the URL path.
+    /// Only the response is certified. Request details (headers, query
+    /// params) are not included in the certification hash. This is the
+    /// **default mode** and is correct for the vast majority of routes
+    /// where the response depends only on the URL path and canister state.
+    ///
+    /// Use [`ResponseOnlyConfig`] to control which response headers
+    /// participate in the hash. The response body and status code are
+    /// always certified regardless of header configuration.
     ResponseOnly(ResponseOnlyConfig),
 
-    /// Both request and response are certified.
-    /// Required when the response depends on request headers (e.g.,
-    /// `Authorization`, `Accept`).
+    /// Both request and response are certified. Required when the response
+    /// depends on request identity — for example, when different
+    /// `Authorization` headers produce different responses. Without full
+    /// certification a malicious replica could serve one user's cached
+    /// response to another user.
+    ///
+    /// Use [`FullConfig`] (or the [`FullConfigBuilder`]) to specify which
+    /// request headers and query parameters participate in the hash.
+    /// The request method and body are **always** certified automatically.
     Full(FullConfig),
 }
 
 impl CertificationMode {
-    /// Convenience constructor for skip mode.
+    /// Create a skip-certification mode.
+    ///
+    /// Equivalent to `CertificationMode::Skip`. Provided for symmetry
+    /// with [`response_only()`](Self::response_only) and
+    /// [`authenticated()`](Self::authenticated).
     pub fn skip() -> Self {
         Self::Skip
     }
 
-    /// Convenience constructor for response-only with default config.
+    /// Create a response-only certification mode with the default
+    /// [`ResponseOnlyConfig`] (wildcard header inclusion, standard
+    /// exclusions).
+    ///
+    /// This is also what [`CertificationMode::default()`] returns.
     pub fn response_only() -> Self {
         Self::ResponseOnly(ResponseOnlyConfig::default())
     }
 
-    /// Authenticated API: full certification with `Authorization` request
-    /// header and `content-type` response header.
+    /// Create a full-certification preset for authenticated APIs.
     ///
-    /// Use this when the response depends on who is making the request.
-    /// Different `Authorization` headers will produce different certified
-    /// responses.
+    /// Includes the `Authorization` request header and `Content-Type`
+    /// response header in the certification hash. Use this when the
+    /// response depends on the caller's identity — different
+    /// `Authorization` tokens will produce independently certified
+    /// responses, preventing cross-user response mixing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ic_asset_router::CertificationMode;
+    ///
+    /// let mode = CertificationMode::authenticated();
+    /// match mode {
+    ///     CertificationMode::Full(config) => {
+    ///         assert_eq!(config.request_headers, vec!["authorization"]);
+    ///         assert_eq!(config.response.include_headers, vec!["content-type"]);
+    ///     }
+    ///     _ => unreachable!(),
+    /// }
+    /// ```
     pub fn authenticated() -> Self {
         Self::Full(
             FullConfig::builder()
@@ -73,20 +153,40 @@ impl Default for CertificationMode {
 /// Configuration for response-only certification.
 ///
 /// Controls which response headers participate in the certification hash.
-/// The response body and status code are always certified regardless of
-/// header configuration.
+/// The response body and status code are **always** certified regardless
+/// of header configuration.
+///
+/// # Header Selection
+///
+/// There are two strategies for selecting headers:
+///
+/// 1. **Wildcard with exclusions** (default) — set `include_headers` to
+///    `["*"]` and list headers to skip in `exclude_headers`. This is the
+///    safest default because new headers are automatically covered.
+///
+/// 2. **Explicit inclusion** — list only the headers you want certified.
+///    Use this when you need precise control or want to minimize the
+///    certification payload.
+///
+/// # Default
+///
+/// The default configuration includes all headers (`"*"`) and excludes
+/// `date`, `ic-certificate`, and `ic-certificate-expression` (which
+/// are either non-deterministic or managed by the certification layer
+/// itself).
 #[derive(Clone, Debug)]
 pub struct ResponseOnlyConfig {
-    /// Response headers to include in certification hash.
+    /// Response headers to include in the certification hash.
     ///
-    /// Use `vec!["*".to_string()]` to include all headers (with exclusions
-    /// applied via [`exclude_headers`](Self::exclude_headers)).
+    /// Set to `vec!["*".to_string()]` to include all headers (with
+    /// exclusions applied via [`exclude_headers`](Self::exclude_headers)).
+    /// Alternatively, list specific header names for explicit inclusion.
     pub include_headers: Vec<String>,
 
     /// Response headers to explicitly exclude from certification.
     ///
-    /// Applied after `include_headers`. Useful when `include_headers`
-    /// contains `"*"`.
+    /// Applied after `include_headers`. Only meaningful when
+    /// `include_headers` contains `"*"`.
     pub exclude_headers: Vec<String>,
 }
 
@@ -105,21 +205,57 @@ impl Default for ResponseOnlyConfig {
 
 /// Configuration for full request+response certification.
 ///
-/// In full mode, the request method and body are **always** certified by
+/// In full mode the request method and body are **always** certified by
 /// `ic-http-certification` — there is no opt-out. The configurable parts
 /// are which request headers and query parameters participate in the
 /// certification hash.
+///
+/// # When to Use
+///
+/// Use full certification when the response depends on details of the
+/// incoming request beyond the URL path:
+///
+/// - **`Authorization` header** — different users receive different
+///   responses. Use the [`CertificationMode::authenticated`] preset.
+/// - **`Accept` header** — content negotiation (JSON vs HTML).
+/// - **Query parameters** — pagination (`?page=2`), filtering, sorting.
+///
+/// # Which Headers to Certify
+///
+/// Only certify headers that **affect the response content**. Certifying
+/// headers like `User-Agent` causes cache fragmentation (every browser
+/// version gets a separate certificate) with no security benefit.
+///
+/// # Example
+///
+/// ```
+/// use ic_asset_router::FullConfig;
+///
+/// let config = FullConfig::builder()
+///     .with_request_headers(&["authorization", "accept"])
+///     .with_query_params(&["page", "limit"])
+///     .with_response_headers(&["content-type"])
+///     .build();
+///
+/// assert_eq!(config.request_headers, vec!["authorization", "accept"]);
+/// assert_eq!(config.query_params, vec!["page", "limit"]);
+/// ```
 #[derive(Clone, Debug)]
 pub struct FullConfig {
-    /// Request headers to include in certification.
-    /// Only these headers are hashed; others are ignored.
+    /// Request headers to include in the certification hash.
+    ///
+    /// Only these headers are hashed; all other request headers are
+    /// ignored during certification. Header names should be lowercase.
     pub request_headers: Vec<String>,
 
-    /// Query parameters to include in certification.
-    /// Only these params affect the certified response.
+    /// Query parameters to include in the certification hash.
+    ///
+    /// When set, requests with different values for these parameters
+    /// produce independently certified responses. A malicious replica
+    /// cannot serve the `?page=1` response when `?page=2` is requested.
     pub query_params: Vec<String>,
 
-    /// Response certification configuration.
+    /// Response certification configuration (header inclusion/exclusion).
     pub response: ResponseOnlyConfig,
 }
 
@@ -140,22 +276,27 @@ impl FullConfig {
     }
 }
 
-/// Builder for [`FullConfig`] to enable ergonomic construction.
+/// Builder for [`FullConfig`] with ergonomic chained construction.
 ///
-/// All `with_*_headers` methods normalize header names to lowercase.
+/// All `with_*_headers` methods normalize header names to lowercase,
+/// so `"Authorization"` and `"authorization"` are treated identically.
 ///
 /// # Example
 ///
 /// ```
-/// use ic_asset_router::certification::FullConfig;
+/// use ic_asset_router::FullConfig;
 ///
 /// let config = FullConfig::builder()
 ///     .with_request_headers(&["Authorization", "Accept"])
 ///     .with_query_params(&["page", "limit"])
 ///     .with_response_headers(&["Content-Type"])
+///     .excluding_response_headers(&["Set-Cookie"])
 ///     .build();
 ///
 /// assert_eq!(config.request_headers, vec!["authorization", "accept"]);
+/// assert_eq!(config.query_params, vec!["page", "limit"]);
+/// assert_eq!(config.response.include_headers, vec!["content-type"]);
+/// assert_eq!(config.response.exclude_headers, vec!["set-cookie"]);
 /// ```
 #[derive(Default)]
 pub struct FullConfigBuilder {

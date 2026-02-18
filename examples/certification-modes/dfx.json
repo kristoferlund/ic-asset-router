@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "certification_modes": {
+      "type": "rust",
+      "package": "certification-modes",
+      "candid": "certification_modes.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

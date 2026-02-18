@@ -11,8 +11,9 @@
 //!   filenames (`og.png.rs` → `/og.png`), and nested directories all work
 //!   out of the box. See [`build::generate_routes`].
 //! - **IC response certification** — responses are automatically certified so
-//!   boundary nodes can verify them. Static assets and dynamic content are
-//!   handled transparently.
+//!   boundary nodes can verify them. Choose from three certification modes
+//!   (Skip, ResponseOnly, Full) per route or per asset. See
+//!   [Certification Modes](#certification-modes) below.
 //! - **Typed route context** — handlers receive a [`RouteContext`] with typed
 //!   path params, typed search params, headers, body, and the full URL.
 //! - **Scoped middleware** — place a `middleware.rs` in any directory to wrap
@@ -80,6 +81,128 @@
 //! directory for complete, deployable canister projects including a
 //! [React SPA](https://github.com/kristoferlund/ic-asset-router/tree/main/examples/react-app)
 //! with TanStack Router/Query and per-route SEO meta tags.
+//!
+//! # Certification Modes
+//!
+//! Every response served by an IC canister can be cryptographically certified
+//! so that boundary nodes can verify it was not tampered with. This library
+//! supports three certification modes, configurable per-route or per-asset:
+//!
+//! ## Choosing a Mode
+//!
+//! **Start with Response-Only (the default).** It is correct for 90% of
+//! routes and requires zero configuration.
+//!
+//! | Mode | When to use | Example routes |
+//! |------|-------------|----------------|
+//! | **Response-only** | Same URL always returns same content | Static pages, blog posts, docs |
+//! | **Skip** | Tampering has no security impact | Health checks, `/ping` |
+//! | **Authenticated** | Response depends on caller identity | User profiles, dashboards |
+//! | **Custom (Full)** | Response depends on specific headers/params | Content negotiation, pagination |
+//!
+//! ## Response-Only (Default)
+//!
+//! No attribute needed — just write your handler:
+//!
+//! ```rust,ignore
+//! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     // Automatically uses ResponseOnly certification
+//!     HttpResponse::builder()
+//!         .with_status_code(StatusCode::OK)
+//!         .with_body(b"Hello!" as &[u8])
+//!         .build()
+//! }
+//! ```
+//!
+//! The response body, status code, and headers are certified. The request
+//! details are not included in the hash. This is sufficient when the
+//! response depends only on the URL path and canister state.
+//!
+//! ## Skip Certification
+//!
+//! ```rust,ignore
+//! #[route(certification = "skip")]
+//! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     // No certification overhead
+//!     HttpResponse::builder()
+//!         .with_body(b"{\"status\":\"ok\"}" as &[u8])
+//!         .build()
+//! }
+//! ```
+//!
+//! **Security note:** A malicious replica can return arbitrary data for
+//! skip-certified paths. Only use for data that is publicly verifiable or
+//! has no security value.
+//!
+//! ## Authenticated (Full Certification Preset)
+//!
+//! ```rust,ignore
+//! #[route(certification = "authenticated")]
+//! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     // Authorization header is included in certification
+//!     // User A cannot receive User B's cached response
+//!     HttpResponse::builder()
+//!         .with_body(b"{\"name\":\"Alice\"}" as &[u8])
+//!         .build()
+//! }
+//! ```
+//!
+//! The `authenticated` preset is a preconfigured Full mode that includes
+//! the `Authorization` request header and `Content-Type` response header.
+//!
+//! ## Custom Full Certification
+//!
+//! ```rust,ignore
+//! #[route(certification = custom(
+//!     request_headers = ["accept"],
+//!     query_params = ["page", "limit"]
+//! ))]
+//! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     // Each combination of Accept + page + limit is independently certified
+//!     HttpResponse::builder()
+//!         .with_body(b"page content" as &[u8])
+//!         .build()
+//! }
+//! ```
+//!
+//! ## Programmatic Configuration
+//!
+//! For static assets certified during `init`/`post_upgrade`, use
+//! [`certify_assets_with_mode`]:
+//!
+//! ```rust,ignore
+//! use ic_asset_router::{certify_assets, certify_assets_with_mode, CertificationMode};
+//!
+//! // Default: response-only
+//! certify_assets(&include_dir!("assets/static"));
+//!
+//! // Skip for public files
+//! certify_assets_with_mode(
+//!     &include_dir!("assets/public"),
+//!     CertificationMode::skip(),
+//! );
+//! ```
+//!
+//! ## Performance Comparison
+//!
+//! | Mode | Relative cost | Witness size |
+//! |------|---------------|--------------|
+//! | Skip | ~0 | Minimal |
+//! | Response-only | Low | ~200 bytes |
+//! | Full (authenticated) | Medium | ~300 bytes |
+//! | Full (custom) | Medium–High | ~300–500 bytes |
+//!
+//! ## Common Mistakes
+//!
+//! - **Over-certifying:** Certifying `User-Agent` causes cache
+//!   fragmentation (every browser version gets a separate certificate).
+//!   Only certify headers that affect the response content.
+//! - **Under-certifying:** Using response-only for authenticated endpoints
+//!   means a malicious replica can serve any cached response to any user.
+//!   Use `#[route(certification = "authenticated")]` instead.
+//! - **Certifying non-deterministic data:** If the response body changes
+//!   every call (e.g., timestamps), the certificate is immediately stale.
+//!   Use `skip` or add a TTL.
 
 /// Debug logging macro gated behind the `debug-logging` feature flag.
 /// When enabled, expands to `ic_cdk::println!`; otherwise compiles to nothing.

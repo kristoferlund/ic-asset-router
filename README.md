@@ -5,7 +5,7 @@ Build full-stack web applications on the [Internet Computer](https://internetcom
 ## Features
 
 - **File-based routing** — `src/routes/` maps directly to URL paths. Dynamic segments (`_postId/`), catch-all wildcards (`all.rs`), and nested directories are all supported.
-- **IC response certification** — responses are automatically certified so boundary nodes can verify them. Static assets and dynamic content are handled transparently.
+- **IC response certification** — responses are automatically certified so boundary nodes can verify them. Choose from three certification modes (Skip, ResponseOnly, Full) per route via `#[route(certification = "...")]`. See [Certification Modes](#certification-modes).
 - **Typed route context** — handlers receive a [`RouteContext<P, S>`](https://docs.rs/ic-asset-router/latest/ic_asset_router/context/struct.RouteContext.html) with typed path params, typed search params, headers, body, and the full URL.
 - **Scoped middleware** — place a `middleware.rs` in any directory to wrap all handlers below it. Middleware composes from root to leaf.
 - **Security headers** — choose from [`strict`](https://docs.rs/ic-asset-router/latest/ic_asset_router/config/struct.SecurityHeaders.html#method.strict), [`permissive`](https://docs.rs/ic-asset-router/latest/ic_asset_router/config/struct.SecurityHeaders.html#method.permissive), or [`none`](https://docs.rs/ic-asset-router/latest/ic_asset_router/config/struct.SecurityHeaders.html#method.none) presets, or configure individual headers.
@@ -236,6 +236,91 @@ Use `#[route(path = "...")]` to override the filename-derived segment. Useful fo
 pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> { /* ... */ }
 ```
 
+## Certification Modes
+
+Every HTTP response served by an IC canister can be cryptographically certified so boundary nodes can verify it was not tampered with. This library supports three certification modes, configurable per-route via the `#[route]` attribute:
+
+### Choosing a mode
+
+| Mode | When to use | Example routes |
+|------|-------------|----------------|
+| **Response-only** (default) | Same URL always returns same content | Static pages, blog posts, docs |
+| **Skip** | Tampering has no security impact | Health checks, `/ping` |
+| **Authenticated** | Response depends on caller identity | User profiles, dashboards |
+| **Custom (Full)** | Response depends on specific headers/params | Content negotiation, pagination |
+
+**Start with the default** (response-only). It requires no configuration and is correct for 90% of routes.
+
+### Response-only (default — no attribute needed)
+
+```rust
+// Just write your handler — ResponseOnly is automatic
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    HttpResponse::builder()
+        .with_body(b"Hello!" as &[u8])
+        .build()
+}
+```
+
+### Skip certification
+
+```rust
+#[route(certification = "skip")]
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    // No certification overhead — fastest mode
+    HttpResponse::builder()
+        .with_body(b"{\"status\":\"ok\"}" as &[u8])
+        .build()
+}
+```
+
+> **Security note:** A malicious replica can return arbitrary data for skip-certified paths. Only use for data that is publicly verifiable or has no security value.
+
+### Authenticated (full certification preset)
+
+```rust
+#[route(certification = "authenticated")]
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    // Authorization header is included in certification
+    // User A cannot receive User B's cached response
+    HttpResponse::builder()
+        .with_body(b"{\"name\":\"Alice\"}" as &[u8])
+        .build()
+}
+```
+
+### Custom full certification
+
+```rust
+#[route(certification = custom(
+    request_headers = ["accept"],
+    query_params = ["page", "limit"]
+))]
+pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
+    // Each combination of Accept + page + limit is independently certified
+    HttpResponse::builder()
+        .with_body(b"page content" as &[u8])
+        .build()
+}
+```
+
+### Programmatic configuration (for static assets)
+
+```rust
+use ic_asset_router::{certify_assets, certify_assets_with_mode, CertificationMode};
+
+// Default: response-only
+certify_assets(&include_dir!("assets/static"));
+
+// Skip for public files
+certify_assets_with_mode(
+    &include_dir!("assets/public"),
+    CertificationMode::skip(),
+);
+```
+
+See the [`certification-modes`](examples/certification-modes/) and [`api-authentication`](examples/api-authentication/) examples for complete, deployable demonstrations.
+
 ## Configuration
 
 ### Security headers
@@ -292,6 +377,8 @@ Each example is a complete, deployable ICP canister. Clone the repo and `dfx dep
 | [`security-headers`](examples/security-headers/) | Security header presets: strict, permissive, and custom |
 | [`cache-invalidation`](examples/cache-invalidation/) | TTL-based cache expiry and explicit invalidation |
 | [`custom-404`](examples/custom-404/) | Styled 404 page via `not_found.rs` |
+| [`certification-modes`](examples/certification-modes/) | Skip, response-only, authenticated, and custom certification modes |
+| [`api-authentication`](examples/api-authentication/) | Why authenticated endpoints need full certification |
 | [`react-app`](examples/react-app/) | React SPA with TanStack Router/Query, per-route SEO meta tags, and canister API calls |
 
 ## How This Library Was Built

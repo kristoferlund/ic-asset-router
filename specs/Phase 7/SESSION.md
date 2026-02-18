@@ -75,3 +75,63 @@ Task 7.6.8 — the final task in spec group 7.6. All prior tasks (7.6.1–7.6.7)
 ### Out-of-scope observations
 
 - All spec 7.6 tasks are now complete. The remaining incomplete spec group is 7.5 (Documentation and Examples).
+
+---
+
+## Session 6: Spec 7.5 — Documentation and Examples for Certification Modes
+
+**Date:** 2026-02-18
+
+### Tasks completed
+
+All 6 tasks (7.5.1–7.5.6) implemented successfully.
+
+- **7.5.1** Added comprehensive rustdoc to all new public types:
+  - `CertificationMode` — "When to Use Each Variant" table, code examples for `default()`, `skip()`, `authenticated()`.
+  - `ResponseOnlyConfig` — header selection strategies (wildcard with exclusions vs explicit inclusion), default explanation.
+  - `FullConfig` — "When to Use" guidance, "Which Headers to Certify" advice, code example.
+  - `FullConfigBuilder` — enhanced example showing all builder methods.
+  - `RouteConfig` — defaults table, `#[route]` macro usage examples.
+  - `AssetRouter` — lookup order documentation (exact → alias → fallback), thread safety note.
+  - `CertifiedAsset` — description of stored state and why `Clone` is not derived.
+  - `AssetCertificationConfig` — default behavior description.
+  - `AssetEncoding` — encoding preference order (Brotli > Gzip > Identity).
+  - Module-level doc for `asset_router` — capabilities list.
+
+- **7.5.2** Added "Certification Modes" section to `src/lib.rs` crate-level doc comment with:
+  - Decision table (mode → when to use → example routes).
+  - Code examples for Response-only (default), Skip, Authenticated, Custom Full.
+  - Programmatic configuration section for `certify_assets_with_mode`.
+  - Performance comparison table (relative cost and witness size).
+  - Common mistakes section (over-certifying, under-certifying, non-deterministic data).
+
+- **7.5.3** Created `examples/certification-modes/` example canister with 4 routes:
+  - `GET /` — response-only (default, no attribute)
+  - `GET /public/health` — skip certification
+  - `GET /api/user` — authenticated (full certification)
+  - `GET /content/articles` — custom full with query params `page` and `limit`
+
+- **7.5.4** Created `examples/api-authentication/` focused example canister with 2 routes:
+  - `GET /` — public about page (response-only, explains the concept)
+  - `GET /profile` — authenticated endpoint showing why Authorization header certification prevents cross-user response mixing
+
+- **7.5.5** Updated `README.md`:
+  - Added "Certification Modes" section with choosing-a-mode table, code examples for all 4 modes, and programmatic configuration for static assets.
+  - Updated the features bullet point to mention configurable certification modes.
+  - Added `certification-modes` and `api-authentication` to the examples table.
+
+- **7.5.6** Full verification passed:
+  - `cargo check` — clean
+  - `cargo test` — 262 unit tests pass, 10 doc tests pass (3 new doc tests added)
+  - `cargo doc --no-deps` — builds without warnings
+  - Both new examples compile with `cargo check`
+
+### Obstacles encountered
+
+- **`QueryParams` type mismatch**: Initial `articles.rs` handler used `.first()` on query values, but `QueryParams` is `HashMap<String, String>` (not `HashMap<String, Vec<String>>`). Fixed to use `.get()` directly.
+- No other obstacles — this was a documentation-only spec with no logic changes.
+
+### Out-of-scope observations
+
+- All Phase 7 spec groups (7.1–7.6, 7.5) are now complete. The implementation plan has no remaining unchecked tasks.
+- The two new examples follow the established canister pattern but don't include static asset directories — they're pure route-handler examples. If the project later adds a convention for example READMEs, these could be enhanced.

@@ -5,17 +5,36 @@ use crate::certification::CertificationMode;
 /// Type alias for HTTP header name-value pairs.
 pub type HeaderField = (String, String);
 
-/// Configuration for a route, extracted from `#[route]` attribute.
+/// Per-route configuration extracted from the `#[route(...)]` attribute.
 ///
 /// Carries the certification mode, optional TTL override, and additional
 /// headers to include in all responses for this route.
 ///
+/// Most routes do not need an explicit `RouteConfig` — the default
+/// (`ResponseOnly` certification, no TTL, no extra headers) is
+/// automatically applied when no `#[route]` attribute is present.
+///
 /// # Defaults
 ///
-/// - `certification`: [`CertificationMode::response_only()`] — response-only
-///   certification with wildcard header inclusion.
-/// - `ttl`: `None` — no per-route TTL override (the global config applies).
-/// - `headers`: empty — no additional headers.
+/// | Field | Default | Meaning |
+/// |-------|---------|---------|
+/// | `certification` | [`CertificationMode::response_only()`] | Response-only with wildcard headers |
+/// | `ttl` | `None` | Uses the global [`CacheConfig`](crate::config::CacheConfig) TTL |
+/// | `headers` | `[]` | No additional headers |
+///
+/// # Usage with the `#[route]` Macro
+///
+/// ```rust,ignore
+/// use ic_asset_router::route;
+///
+/// // Skip certification for a health-check endpoint:
+/// #[route(certification = "skip")]
+/// pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> { /* ... */ }
+///
+/// // Authenticated endpoint with per-route TTL:
+/// #[route(certification = "authenticated", ttl = 60)]
+/// pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> { /* ... */ }
+/// ```
 #[derive(Clone, Debug)]
 pub struct RouteConfig {
     /// Certification mode for this route.

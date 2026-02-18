@@ -1,0 +1,15 @@
+{
+  "canisters": {
+    "api_authentication": {
+      "type": "rust",
+      "package": "api-authentication",
+      "candid": "api_authentication.did"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": ""
+    }
+  },
+  "version": 1
+}

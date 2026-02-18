@@ -140,12 +140,12 @@ Depends on: 7.1, 7.2, 7.3
 
 Depends on: 7.1, 7.2, 7.3, 7.4
 
-- [ ] **7.5.1** Add rustdoc to all new public types (`CertificationMode`, `ResponseOnlyConfig`, `FullConfig`, `FullConfigBuilder`, `RouteConfig`, `AssetRouter`, `CertifiedAsset`, `AssetCertificationConfig`). Include "when to use" guidance and code examples.
-- [ ] **7.5.2** Add a "Certification Modes" section to the crate-level doc comment in `src/lib.rs` (or create `docs/certification.md`). Include the decision tree, header selection guide, and performance comparison.
-- [ ] **7.5.3** Create `examples/certification-modes/` example canister demonstrating Skip, ResponseOnly, authenticated, and custom modes.
-- [ ] **7.5.4** Create `examples/api-authentication/` example canister demonstrating why authenticated endpoints need Full certification.
-- [ ] **7.5.5** Update `README.md` with a certification section referencing the new modes and linking to examples.
-- [ ] **7.5.6** Verify: `cargo doc --no-deps` builds without warnings. Examples compile with `cargo check`.
+- [x] **7.5.1** Add rustdoc to all new public types (`CertificationMode`, `ResponseOnlyConfig`, `FullConfig`, `FullConfigBuilder`, `RouteConfig`, `AssetRouter`, `CertifiedAsset`, `AssetCertificationConfig`). Include "when to use" guidance and code examples.
+- [x] **7.5.2** Add a "Certification Modes" section to the crate-level doc comment in `src/lib.rs` (or create `docs/certification.md`). Include the decision tree, header selection guide, and performance comparison.
+- [x] **7.5.3** Create `examples/certification-modes/` example canister demonstrating Skip, ResponseOnly, authenticated, and custom modes.
+- [x] **7.5.4** Create `examples/api-authentication/` example canister demonstrating why authenticated endpoints need Full certification.
+- [x] **7.5.5** Update `README.md` with a certification section referencing the new modes and linking to examples.
+- [x] **7.5.6** Verify: `cargo doc --no-deps` builds without warnings. Examples compile with `cargo check`.
 
 ---
 

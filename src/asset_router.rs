@@ -1,10 +1,25 @@
-/// Asset router supporting per-asset certification modes.
+/// Asset router with per-asset certification modes.
 ///
-/// This module replaces the external `ic-asset-certification::AssetRouter` with
-/// a custom implementation built directly on `ic-http-certification` primitives.
-/// It supports per-asset certification configuration, encoding negotiation,
-/// fallback/scope matching, and path aliases — all in a single unified data
-/// structure that eliminates the need for a separate `DYNAMIC_CACHE`.
+/// This module provides the [`AssetRouter`] — a unified store for certified
+/// assets (both static and dynamic). It replaces the external
+/// `ic-asset-certification::AssetRouter` with a custom implementation built
+/// directly on `ic-http-certification` primitives.
+///
+/// # Capabilities
+///
+/// - **Per-asset certification modes** — each asset can independently use
+///   [`Skip`](crate::CertificationMode::Skip),
+///   [`ResponseOnly`](crate::CertificationMode::ResponseOnly), or
+///   [`Full`](crate::CertificationMode::Full) certification.
+/// - **Encoding negotiation** — Brotli, Gzip, and Identity variants are
+///   stored per-asset and the best encoding is selected based on the
+///   client's `Accept-Encoding` header.
+/// - **Fallback/scope matching** — assets can be registered as fallbacks
+///   for a scope (e.g., SPA index for `/`). Longest-prefix match wins.
+/// - **Path aliases** — multiple paths can map to the same asset
+///   (e.g., `/` and `/index.html`).
+/// - **TTL-based expiry** — dynamic assets can have an optional TTL for
+///   automatic cache invalidation.
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,14 +40,18 @@ use crate::mime::get_mime_type;
 // Types
 // ---------------------------------------------------------------------------
 
-/// Asset encoding variants supported by the router.
+/// Content encoding variants supported by the asset router.
+///
+/// When serving an asset, the router selects the best encoding based on
+/// the client's `Accept-Encoding` header, preferring Brotli over Gzip
+/// over Identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AssetEncoding {
-    /// No encoding (identity).
+    /// No encoding (identity). Always available for every asset.
     Identity,
-    /// Gzip compression.
+    /// Gzip compression (`Content-Encoding: gzip`).
     Gzip,
-    /// Brotli compression.
+    /// Brotli compression (`Content-Encoding: br`). Preferred when available.
     Brotli,
 }
 
@@ -47,12 +66,16 @@ impl AssetEncoding {
     }
 }
 
-/// A certified asset with all its metadata and certification info.
+/// A certified asset stored in the [`AssetRouter`].
 ///
-/// This struct intentionally does NOT derive `Clone`.
-/// `HttpCertificationTreeEntry` references the tree and should not be
-/// duplicated. Aliases are stored as path -> canonical-path mappings in the
-/// router, not as cloned asset entries.
+/// Contains the asset body, compressed variants, response metadata,
+/// certification state, and tree entry for witness generation. Each
+/// `CertifiedAsset` is stored at a canonical path in the router; aliases
+/// and fallback scopes reference back to the canonical entry.
+///
+/// This struct intentionally does **not** derive `Clone` because
+/// [`HttpCertificationTreeEntry`] references the certification tree and
+/// should not be duplicated.
 pub struct CertifiedAsset {
     /// Raw content (for Identity encoding).
     pub content: Vec<u8>,
@@ -124,7 +147,18 @@ impl CertifiedAsset {
     }
 }
 
-/// Configuration for certifying an asset.
+/// Configuration passed to [`AssetRouter::certify_asset`] or
+/// [`AssetRouter::certify_dynamic_asset`] when registering an asset.
+///
+/// Controls the certification mode, content type, response headers,
+/// pre-compressed encoding variants, fallback scope, path aliases,
+/// certification timestamp, and TTL.
+///
+/// # Default
+///
+/// The default configuration uses [`CertificationMode::response_only()`],
+/// auto-detects the content type from the file extension, and has no TTL
+/// (static asset that never expires).
 pub struct AssetCertificationConfig {
     /// Certification mode (determines CEL expression).
     pub mode: CertificationMode,
@@ -177,7 +211,7 @@ impl Default for AssetCertificationConfig {
     }
 }
 
-/// Errors that can occur when certifying or serving assets.
+/// Errors returned by [`AssetRouter`] certification and serving methods.
 #[derive(Debug)]
 pub enum AssetRouterError {
     /// The certification process itself failed (upstream library error).
@@ -214,11 +248,28 @@ impl std::error::Error for AssetRouterError {}
 // AssetRouter
 // ---------------------------------------------------------------------------
 
-/// Asset router supporting per-asset certification modes.
+/// Unified asset store with per-asset certification modes.
 ///
-/// Replaces `ic-asset-certification::AssetRouter` with a custom implementation
-/// that supports per-asset certification configuration. Uses
-/// `ic-http-certification` primitives directly.
+/// Stores both static assets (embedded at compile time via
+/// [`certify_assets`](crate::certify_assets)) and dynamic assets
+/// (generated at runtime via [`certify_dynamic_asset`](Self::certify_dynamic_asset)).
+/// All assets share a single [`HttpCertificationTree`] so the canister
+/// exposes one consistent root hash.
+///
+/// # Lookup Order
+///
+/// When [`serve_asset`](Self::serve_asset) is called:
+///
+/// 1. **Exact match** — canonical path in the asset map.
+/// 2. **Alias resolution** — alias path mapped to a canonical path.
+/// 3. **Fallback match** — longest-prefix fallback scope that covers
+///    the request path (e.g., a SPA index registered for `/`).
+///
+/// # Thread Safety
+///
+/// `AssetRouter` is **not** `Send` or `Sync` because it holds an
+/// `Rc<RefCell<HttpCertificationTree>>`. On the IC this is fine — all
+/// canister code runs single-threaded. Store it in a `thread_local!`.
 pub struct AssetRouter {
     /// Certified assets by canonical path.
     assets: HashMap<String, CertifiedAsset>,
