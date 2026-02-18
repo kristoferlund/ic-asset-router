@@ -1,5 +1,5 @@
-use ic_http_certification::{HttpResponse, StatusCode};
 use ic_asset_router::RouteContext;
+use ic_http_certification::{HttpResponse, StatusCode};
 use std::borrow::Cow;
 
 use crate::data;
@@ -37,8 +37,7 @@ pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
 /// Expects `{"name":"..."}`. Returns the updated item.
 pub fn put(ctx: RouteContext<Params>) -> HttpResponse<'static> {
     let id: u64 = ctx.params.item_id.parse().unwrap_or(0);
-    let body_str = String::from_utf8_lossy(&ctx.body);
-    let input: Result<data::CreateItem, _> = serde_json::from_str(&body_str);
+    let input: Result<data::CreateItem, _> = ctx.json();
 
     match input {
         Ok(update) => match data::update_item(id, update) {

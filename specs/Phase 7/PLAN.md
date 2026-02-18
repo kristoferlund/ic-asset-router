@@ -156,17 +156,17 @@ Depends on: 7.1, 7.2, 7.3, 7.4
 
 Depends on: None (but scheduled last to migrate examples from 7.5)
 
-- [ ] **7.7.1** Add `RouteContext::header(&self, name: &str) -> Option<&str>` — case-insensitive lookup, first match wins, zero-copy.
-- [ ] **7.7.2** Add `RouteContext::body_to_str(&self) -> Result<&str, Utf8Error>` — strict UTF-8 check, zero-copy.
-- [ ] **7.7.3** Add `RouteContext::json<T: DeserializeOwned>(&self) -> Result<T, JsonBodyError>` and `JsonBodyError` enum. Add `serde_json = "1.0"` to `[dependencies]`.
-- [ ] **7.7.4** Add `RouteContext::form_data(&self) -> HashMap<String, String>` (untyped, wraps `parse_form_body`) and `RouteContext::form<T: DeserializeOwned>(&self) -> Result<T, FormBodyError>` (typed) with `FormBodyError` enum.
-- [ ] **7.7.5** Export new types from `src/lib.rs` (`JsonBodyError`, `FormBodyError`; the methods are inherent so they export with `RouteContext`).
-- [ ] **7.7.6** Write unit tests in `src/context.rs`: `header` (case-insensitive, missing, first-match-wins), `body_to_str` (valid, invalid, empty), `json` (valid, invalid JSON, invalid UTF-8, empty), `form_data` (basic, empty, url-encoded), `form` (valid, missing field, invalid UTF-8, empty).
-- [ ] **7.7.7** Migrate **all** examples and e2e tests: do a full codebase search for `eq_ignore_ascii_case`, `from_utf8_lossy(&ctx.body)`, `serde_json::from_str` on body, and `parse_form_body(&ctx.body)` in `examples/` and `tests/e2e/`. Replace every hit in `RouteContext`-based code with the new convenience methods. Also migrate all `certify_all_assets` calls to `certify_assets`. Verify zero remaining verbose patterns and zero deprecated API calls.
-- [ ] **7.7.8** Update `ic-http-certification` version in `Cargo.toml` from `"3.0.3"` to `"3.1"` to match the actual resolved version.
-- [ ] **7.7.9** Migrate internal code: replace `eq_ignore_ascii_case` pattern in `src/lib.rs` where `RouteContext` is available.
-- [ ] **7.7.10** Replace string-based source scanning in `src/build.rs` with `syn`-based parsing: add `syn` to `[build-dependencies]`, rewrite `scan_certification_attribute()` and `has_search_params()` to use `syn::parse_file` and AST walking. Update tests.
-- [ ] **7.7.11** Verify: `cargo check`, `cargo test`, `cargo doc --no-deps` all pass.
+- [x] **7.7.1** Add `RouteContext::header(&self, name: &str) -> Option<&str>` — case-insensitive lookup, first match wins, zero-copy.
+- [x] **7.7.2** Add `RouteContext::body_to_str(&self) -> Result<&str, Utf8Error>` — strict UTF-8 check, zero-copy.
+- [x] **7.7.3** Add `RouteContext::json<T: DeserializeOwned>(&self) -> Result<T, JsonBodyError>` and `JsonBodyError` enum. Add `serde_json = "1.0"` to `[dependencies]`.
+- [x] **7.7.4** Add `RouteContext::form_data(&self) -> HashMap<String, String>` (untyped, wraps `parse_form_body`) and `RouteContext::form<T: DeserializeOwned>(&self) -> Result<T, FormBodyError>` (typed) with `FormBodyError` enum.
+- [x] **7.7.5** Export new types from `src/lib.rs` (`JsonBodyError`, `FormBodyError`; the methods are inherent so they export with `RouteContext`).
+- [x] **7.7.6** Write unit tests in `src/context.rs`: `header` (case-insensitive, missing, first-match-wins), `body_to_str` (valid, invalid, empty), `json` (valid, invalid JSON, invalid UTF-8, empty), `form_data` (basic, empty, url-encoded), `form` (valid, missing field, invalid UTF-8, empty).
+- [x] **7.7.7** Migrate **all** examples and e2e tests: do a full codebase search for `eq_ignore_ascii_case`, `from_utf8_lossy(&ctx.body)`, `serde_json::from_str` on body, and `parse_form_body(&ctx.body)` in `examples/` and `tests/e2e/`. Replace every hit in `RouteContext`-based code with the new convenience methods. Also migrate all `certify_all_assets` calls to `certify_assets`. Verify zero remaining verbose patterns and zero deprecated API calls.
+- [x] **7.7.8** Update `ic-http-certification` version in `Cargo.toml` from `"3.0.3"` to `"3.1"` to match the actual resolved version.
+- [x] **7.7.9** Migrate internal code: replace `eq_ignore_ascii_case` pattern in `src/lib.rs` where `RouteContext` is available.
+- [x] **7.7.10** Replace string-based source scanning in `src/build.rs` with `syn`-based parsing: add `syn` to `[build-dependencies]`, rewrite `scan_certification_attribute()` and `has_search_params()` to use `syn::parse_file` and AST walking. Update tests.
+- [x] **7.7.11** Verify: `cargo check`, `cargo test`, `cargo doc --no-deps` all pass.
 
 ---
 

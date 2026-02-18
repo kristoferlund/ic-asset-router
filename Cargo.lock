@@ -380,7 +380,9 @@ dependencies = [
  "include_dir",
  "proptest",
  "serde",
+ "serde_json",
  "serde_urlencoded",
+ "syn 2.0.115",
 ]
 
 [[package]]

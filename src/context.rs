@@ -2,6 +2,60 @@ use std::collections::HashMap;
 
 use ic_http_certification::{HeaderField, Method};
 
+/// Error returned by [`RouteContext::json()`].
+#[derive(Debug)]
+pub enum JsonBodyError {
+    /// The body bytes are not valid UTF-8.
+    Utf8(std::str::Utf8Error),
+    /// JSON deserialization failed.
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for JsonBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Utf8(e) => write!(f, "body is not valid UTF-8: {e}"),
+            Self::Json(e) => write!(f, "JSON deserialization failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for JsonBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Utf8(e) => Some(e),
+            Self::Json(e) => Some(e),
+        }
+    }
+}
+
+/// Error returned by [`RouteContext::form()`].
+#[derive(Debug)]
+pub enum FormBodyError {
+    /// The body bytes are not valid UTF-8.
+    Utf8(std::str::Utf8Error),
+    /// Form deserialization failed.
+    Deserialize(serde_urlencoded::de::Error),
+}
+
+impl std::fmt::Display for FormBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Utf8(e) => write!(f, "body is not valid UTF-8: {e}"),
+            Self::Deserialize(e) => write!(f, "form deserialization failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for FormBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Utf8(e) => Some(e),
+            Self::Deserialize(e) => Some(e),
+        }
+    }
+}
+
 /// A type alias for query string parameters parsed from the URL.
 pub type QueryParams = HashMap<String, String>;
 
@@ -79,6 +133,109 @@ pub struct RouteContext<P, S = ()> {
     /// `Some("docs/report.pdf")` for a request to `/files/docs/report.pdf`
     /// matching `/files/*`.
     pub wildcard: Option<String>,
+}
+
+impl<P, S> RouteContext<P, S> {
+    /// Returns the value of the first header matching `name` (case-insensitive).
+    ///
+    /// Returns `None` if no header with that name exists.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let auth = ctx.header("authorization"); // Option<&str>
+    /// let ct = ctx.header("Content-Type");    // case-insensitive
+    /// ```
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Returns the request body as a UTF-8 string.
+    ///
+    /// Returns `Err` if the body is not valid UTF-8. For lossy conversion,
+    /// use `String::from_utf8_lossy(&ctx.body)` directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// match ctx.body_to_str() {
+    ///     Ok(text) => { /* use text */ }
+    ///     Err(_) => { /* return 400 */ }
+    /// }
+    /// ```
+    pub fn body_to_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.body)
+    }
+
+    /// Deserializes the request body as JSON into type `T`.
+    ///
+    /// Returns `Err` if the body is not valid UTF-8 or if JSON
+    /// deserialization fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// #[derive(serde::Deserialize)]
+    /// struct CreateItem { name: String }
+    ///
+    /// pub fn post(ctx: RouteContext<()>) -> HttpResponse<'static> {
+    ///     let input: CreateItem = match ctx.json() {
+    ///         Ok(v) => v,
+    ///         Err(_) => return bad_request("invalid JSON body"),
+    ///     };
+    ///     // ...
+    ///     # todo!()
+    /// }
+    /// ```
+    pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, JsonBodyError> {
+        let text = std::str::from_utf8(&self.body).map_err(JsonBodyError::Utf8)?;
+        serde_json::from_str(text).map_err(JsonBodyError::Json)
+    }
+
+    /// Parses the request body as `application/x-www-form-urlencoded` key-value
+    /// pairs.
+    ///
+    /// Convenience wrapper around [`parse_form_body`]. Uses lossy UTF-8
+    /// conversion and skips malformed pairs, so it never fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let fields = ctx.form_data();
+    /// let author = fields.get("author").cloned().unwrap_or_default();
+    /// ```
+    pub fn form_data(&self) -> HashMap<String, String> {
+        parse_form_body(&self.body)
+    }
+
+    /// Deserializes the request body as `application/x-www-form-urlencoded`
+    /// into type `T`.
+    ///
+    /// Returns `Err` if the body is not valid UTF-8 or if deserialization
+    /// fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// #[derive(serde::Deserialize)]
+    /// struct CommentForm { author: String, body: String }
+    ///
+    /// pub fn post(ctx: RouteContext<Params>) -> HttpResponse<'static> {
+    ///     let form: CommentForm = match ctx.form() {
+    ///         Ok(v) => v,
+    ///         Err(_) => return bad_request("invalid form data"),
+    ///     };
+    ///     // ...
+    ///     # todo!()
+    /// }
+    /// ```
+    pub fn form<T: serde::de::DeserializeOwned>(&self) -> Result<T, FormBodyError> {
+        let text = std::str::from_utf8(&self.body).map_err(FormBodyError::Utf8)?;
+        serde_urlencoded::from_str(text).map_err(FormBodyError::Deserialize)
+    }
 }
 
 /// Parse query string key-value pairs from a URL.
@@ -430,5 +587,207 @@ mod tests {
     fn parse_form_body_encoded_values() {
         let fields = parse_form_body(b"key=val%26ue");
         assert_eq!(fields.get("key").unwrap(), "val&ue");
+    }
+
+    // --- 7.7: RouteContext convenience method tests ---
+
+    fn test_ctx(headers: Vec<(String, String)>, body: Vec<u8>) -> RouteContext<()> {
+        RouteContext {
+            params: (),
+            search: (),
+            query: QueryParams::new(),
+            method: Method::GET,
+            headers,
+            body,
+            url: String::new(),
+            wildcard: None,
+        }
+    }
+
+    // header tests
+
+    #[test]
+    fn header_case_insensitive() {
+        let ctx = test_ctx(
+            vec![("authorization".to_string(), "Bearer x".to_string())],
+            vec![],
+        );
+        assert_eq!(ctx.header("Authorization"), Some("Bearer x"));
+        assert_eq!(ctx.header("authorization"), Some("Bearer x"));
+        assert_eq!(ctx.header("AUTHORIZATION"), Some("Bearer x"));
+    }
+
+    #[test]
+    fn header_missing() {
+        let ctx = test_ctx(vec![], vec![]);
+        assert_eq!(ctx.header("x-missing"), None);
+    }
+
+    #[test]
+    fn header_first_match_wins() {
+        let ctx = test_ctx(
+            vec![
+                ("x-custom".to_string(), "first".to_string()),
+                ("x-custom".to_string(), "second".to_string()),
+            ],
+            vec![],
+        );
+        assert_eq!(ctx.header("x-custom"), Some("first"));
+    }
+
+    // body_to_str tests
+
+    #[test]
+    fn body_to_str_valid_utf8() {
+        let ctx = test_ctx(vec![], b"hello".to_vec());
+        assert_eq!(ctx.body_to_str(), Ok("hello"));
+    }
+
+    #[test]
+    fn body_to_str_invalid_utf8() {
+        let ctx = test_ctx(vec![], vec![0xff, 0xfe]);
+        assert!(ctx.body_to_str().is_err());
+    }
+
+    #[test]
+    fn body_to_str_empty() {
+        let ctx = test_ctx(vec![], vec![]);
+        assert_eq!(ctx.body_to_str(), Ok(""));
+    }
+
+    // json tests
+
+    #[test]
+    fn json_valid() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Item {
+            name: String,
+        }
+        let ctx = test_ctx(vec![], br#"{"name":"test"}"#.to_vec());
+        let result: Result<Item, _> = ctx.json();
+        assert_eq!(
+            result.unwrap(),
+            Item {
+                name: "test".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn json_invalid_json() {
+        #[derive(serde::Deserialize)]
+        struct Item {
+            #[allow(dead_code)]
+            name: String,
+        }
+        let ctx = test_ctx(vec![], b"{invalid}".to_vec());
+        let result: Result<Item, _> = ctx.json();
+        assert!(matches!(result, Err(JsonBodyError::Json(_))));
+    }
+
+    #[test]
+    fn json_invalid_utf8() {
+        #[derive(serde::Deserialize)]
+        struct Item {
+            #[allow(dead_code)]
+            name: String,
+        }
+        let ctx = test_ctx(vec![], vec![0xff, 0xfe]);
+        let result: Result<Item, _> = ctx.json();
+        assert!(matches!(result, Err(JsonBodyError::Utf8(_))));
+    }
+
+    #[test]
+    fn json_empty_body() {
+        #[derive(serde::Deserialize)]
+        struct Item {
+            #[allow(dead_code)]
+            name: String,
+        }
+        let ctx = test_ctx(vec![], vec![]);
+        let result: Result<Item, _> = ctx.json();
+        assert!(matches!(result, Err(JsonBodyError::Json(_))));
+    }
+
+    // form_data tests
+
+    #[test]
+    fn form_data_basic() {
+        let ctx = test_ctx(vec![], b"name=Alice&age=30".to_vec());
+        let fields = ctx.form_data();
+        assert_eq!(fields.get("name").unwrap(), "Alice");
+        assert_eq!(fields.get("age").unwrap(), "30");
+    }
+
+    #[test]
+    fn form_data_empty() {
+        let ctx = test_ctx(vec![], vec![]);
+        let fields = ctx.form_data();
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn form_data_url_encoded() {
+        let ctx = test_ctx(vec![], b"greeting=hello+world&path=%2Ffoo%2Fbar".to_vec());
+        let fields = ctx.form_data();
+        assert_eq!(fields.get("greeting").unwrap(), "hello world");
+        assert_eq!(fields.get("path").unwrap(), "/foo/bar");
+    }
+
+    // form tests
+
+    #[test]
+    fn form_valid() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Comment {
+            author: String,
+            body: String,
+        }
+        let ctx = test_ctx(vec![], b"author=Alice&body=hello".to_vec());
+        let result: Result<Comment, _> = ctx.form();
+        assert_eq!(
+            result.unwrap(),
+            Comment {
+                author: "Alice".to_string(),
+                body: "hello".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn form_missing_field() {
+        #[derive(serde::Deserialize)]
+        struct Comment {
+            #[allow(dead_code)]
+            author: String,
+            #[allow(dead_code)]
+            body: String,
+        }
+        let ctx = test_ctx(vec![], b"author=Alice".to_vec());
+        let result: Result<Comment, _> = ctx.form();
+        assert!(matches!(result, Err(FormBodyError::Deserialize(_))));
+    }
+
+    #[test]
+    fn form_invalid_utf8() {
+        #[derive(serde::Deserialize)]
+        struct Comment {
+            #[allow(dead_code)]
+            author: String,
+        }
+        let ctx = test_ctx(vec![], vec![0xff, 0xfe]);
+        let result: Result<Comment, _> = ctx.form();
+        assert!(matches!(result, Err(FormBodyError::Utf8(_))));
+    }
+
+    #[test]
+    fn form_empty_body_with_optional_fields() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Opts {
+            name: Option<String>,
+        }
+        let ctx = test_ctx(vec![], vec![]);
+        let result: Result<Opts, _> = ctx.form();
+        assert_eq!(result.unwrap(), Opts { name: None });
     }
 }

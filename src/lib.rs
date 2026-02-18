@@ -304,7 +304,8 @@ pub use assets::{
 pub use certification::{CertificationMode, FullConfig, FullConfigBuilder, ResponseOnlyConfig};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
 pub use context::{
-    deserialize_search_params, parse_form_body, parse_query, url_decode, QueryParams, RouteContext,
+    deserialize_search_params, parse_form_body, parse_query, url_decode, FormBodyError,
+    JsonBodyError, QueryParams, RouteContext,
 };
 pub use ic_asset_router_macros::route;
 pub use route_config::RouteConfig;

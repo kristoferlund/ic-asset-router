@@ -750,31 +750,52 @@ fn detect_method_exports(path: &Path) -> Vec<(&'static str, &'static str)> {
 /// Scan a Rust source file for a `#[route(path = "...")]` attribute and return
 /// the override path segment if present.
 ///
-/// Uses simple string scanning (no `syn` dependency). Matches patterns like:
-/// - `#[route(path = "ogimage.png")]`
-/// - `#[route( path = "ogimage.png" )]`
+/// Parses the file with `syn` and walks top-level function items looking
+/// for `#[route(...)]` attributes containing `path = "..."`. Handles
+/// multi-line attributes correctly.
 ///
 /// Returns `Some("ogimage.png")` if found, `None` otherwise.
 fn scan_route_attribute(path: &Path) -> Option<String> {
     let source = fs::read_to_string(path).ok()?;
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("#[route(") {
-            continue;
-        }
-        // Extract content between `#[route(` and `)]`
-        let after_open = trimmed.strip_prefix("#[route(")?;
-        let inner = after_open.strip_suffix(")]")?;
-        // Look for `path = "..."` within the attribute arguments
-        for arg in inner.split(',') {
-            let arg = arg.trim();
-            if let Some(rest) = arg.strip_prefix("path") {
-                let rest = rest.trim();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let rest = rest.trim();
-                    if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
-                        let value = &rest[1..rest.len() - 1];
-                        return Some(value.to_string());
+    let file = syn::parse_file(&source).ok()?;
+    for item in &file.items {
+        if let syn::Item::Fn(func) = item {
+            for attr in &func.attrs {
+                if attr.path().is_ident("route") {
+                    let tokens = attr
+                        .meta
+                        .require_list()
+                        .map(|list| list.tokens.to_string())
+                        .ok()?;
+                    // Parse `path = "value"` from the stringified tokens.
+                    // The tokenizer normalizes whitespace, so we get `path = "value"`.
+                    if let Some(rest) = tokens.strip_prefix("path") {
+                        let rest = rest.trim_start();
+                        if let Some(rest) = rest.strip_prefix('=') {
+                            let rest = rest.trim();
+                            if rest.starts_with('"') && rest.contains('"') {
+                                // Extract the string between the first pair of quotes
+                                let inner = &rest[1..];
+                                if let Some(end) = inner.find('"') {
+                                    return Some(inner[..end].to_string());
+                                }
+                            }
+                        }
+                    }
+                    // Also handle when `path` is not the first argument:
+                    // e.g., `certification = "skip" , path = "ogimage.png"`
+                    if let Some(idx) = tokens.find("path") {
+                        let rest = &tokens[idx + 4..];
+                        let rest = rest.trim_start();
+                        if let Some(rest) = rest.strip_prefix('=') {
+                            let rest = rest.trim();
+                            if rest.starts_with('"') {
+                                let inner = &rest[1..];
+                                if let Some(end) = inner.find('"') {
+                                    return Some(inner[..end].to_string());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -786,15 +807,29 @@ fn scan_route_attribute(path: &Path) -> Option<String> {
 /// Scan a Rust source file for a `#[route(...)]` attribute that contains a
 /// `certification` key.
 ///
-/// Returns `true` if the file has a `#[route(certification = ...)]` or
-/// `#[route(... certification = ...)]` attribute. This is a best-effort text
-/// scan — it does not parse the full attribute syntax.
+/// Parses the file with `syn` and walks top-level function items looking
+/// for `#[route(...)]` attributes. Returns `true` if any such attribute
+/// contains a `certification` key. Handles multi-line attributes correctly.
 fn scan_certification_attribute(path: &Path) -> bool {
     let source = fs::read_to_string(path).unwrap_or_default();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#[route(") && trimmed.contains("certification") {
-            return true;
+    let file = match syn::parse_file(&source) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    for item in &file.items {
+        if let syn::Item::Fn(func) = item {
+            for attr in &func.attrs {
+                if attr.path().is_ident("route") {
+                    let tokens = attr
+                        .meta
+                        .require_list()
+                        .map(|list| list.tokens.to_string())
+                        .unwrap_or_default();
+                    if tokens.contains("certification") {
+                        return true;
+                    }
+                }
+            }
         }
     }
     false
@@ -802,21 +837,23 @@ fn scan_certification_attribute(path: &Path) -> bool {
 
 /// Scan a Rust source file for a `pub struct SearchParams` declaration.
 ///
-/// Returns `true` if the file contains a line matching `pub struct SearchParams`.
-/// This is a best-effort text scan (no full parser). The developer is expected
-/// to derive `serde::Deserialize` on the struct; the generated wiring will use
-/// `serde_urlencoded::from_str` to deserialize the query string into it.
+/// Parses the file with `syn` and walks top-level items looking for a
+/// `pub struct SearchParams` declaration. Handles any formatting and
+/// ignores private structs or structs in comments/string literals.
 fn has_search_params(path: &Path) -> bool {
     let source = fs::read_to_string(path).unwrap_or_default();
-    source.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("pub struct SearchParams")
-            && trimmed["pub struct SearchParams".len()..]
-                .trim_start()
-                .starts_with('{')
-            || trimmed == "pub struct SearchParams;"
-            || trimmed.starts_with("pub struct SearchParams<")
-    })
+    let file = match syn::parse_file(&source) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    for item in &file.items {
+        if let syn::Item::Struct(s) = item {
+            if s.ident == "SearchParams" && matches!(s.vis, syn::Visibility::Public(_)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Convert a camelCase identifier to snake_case.
@@ -1727,6 +1764,68 @@ pub fn get() -> () { todo!() }
         );
         // Has #[route(...)] but no certification key
         assert!(!scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_multiline() {
+        let path = write_temp_file(
+            "cert_multiline.rs",
+            r#"
+#[route(
+    certification = custom(
+        request_headers = ["authorization"],
+        query_params = ["page", "limit"]
+    )
+)]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_in_comment_ignored() {
+        let path = write_temp_file(
+            "cert_comment.rs",
+            r#"
+// #[route(certification = "skip")]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(!scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn has_search_params_multiline_struct() {
+        let path = write_temp_file(
+            "sp_multiline.rs",
+            r#"
+use serde::Deserialize;
+
+#[derive(Deserialize, Default)]
+pub struct SearchParams
+{
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+}
+"#,
+        );
+        assert!(has_search_params(&path));
+    }
+
+    #[test]
+    fn scan_route_attribute_multiline() {
+        let path = write_temp_file(
+            "scan_multiline.rs",
+            r#"
+#[route(
+    path = "ogimage.png",
+    certification = "skip"
+)]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), Some("ogimage.png".to_string()));
     }
 
     // --- process_directory certification detection tests ---

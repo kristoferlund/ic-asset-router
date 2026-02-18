@@ -6,7 +6,7 @@ mod route_tree {
 }
 
 use ic_asset_router::{
-    assets::{certify_all_assets, delete_assets},
+    assets::{certify_assets, delete_assets},
     set_asset_config, AssetConfig, HttpRequestOptions,
 };
 use ic_cdk::{init, post_upgrade, query, update};
@@ -27,7 +27,7 @@ fn setup() {
     });
 
     // Certify all pre-built assets produced by Vite (JS, CSS, etc.)
-    certify_all_assets(&ASSETS_DIR);
+    certify_assets(&ASSETS_DIR);
 
     // Delete the pre-built index.html from the certified asset cache.
     // Page routes (/, /posts/:postId) will be generated dynamically with

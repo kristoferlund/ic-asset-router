@@ -355,29 +355,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ic-asset-certification"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c427bd354f08462f012619af9b9dc0a745ed6e2b24a23ed7df9e013dfbf7b7ad"
-dependencies = [
- "globset",
- "http",
- "ic-certification",
- "ic-http-certification",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "ic-asset-router"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
- "ic-asset-certification",
+ "ic-asset-router-macros",
  "ic-cdk",
  "ic-certification",
  "ic-http-certification",
  "include_dir",
  "serde",
+ "serde_json",
  "serde_urlencoded",
+]
+
+[[package]]
+name = "ic-asset-router-macros"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.116",
 ]
 
 [[package]]

@@ -290,6 +290,7 @@ dependencies = [
  "ic-http-certification",
  "include_dir",
  "serde",
+ "serde_json",
  "serde_urlencoded",
 ]
 

@@ -22,11 +22,7 @@ use std::borrow::Cow;
 /// any other user — a serious security issue for authenticated endpoints.
 #[route(certification = "authenticated")]
 pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
-    let auth = ctx
-        .headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        .map(|(_, v)| v.as_str());
+    let auth = ctx.header("authorization");
 
     let (status, body) = match auth {
         Some(token) => {

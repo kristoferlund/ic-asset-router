@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use askama::Template;
+use ic_asset_router::RouteContext;
 use ic_http_certification::{HttpResponse, StatusCode};
-use ic_asset_router::{parse_form_body, RouteContext};
 
 use crate::data::{self, Comment};
 
@@ -30,7 +30,7 @@ pub fn get(ctx: RouteContext<Params>) -> HttpResponse<'static> {
 pub fn post(ctx: RouteContext<Params>) -> HttpResponse<'static> {
     let post_id = ctx.params.post_id.clone();
 
-    let fields = parse_form_body(&ctx.body);
+    let fields = ctx.form_data();
 
     let author = fields
         .get("author")

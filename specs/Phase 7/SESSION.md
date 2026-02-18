@@ -247,3 +247,69 @@ All 6 tasks (7.5.1–7.5.6) implemented successfully.
 
 - All Phase 7 spec groups (7.1–7.6, 7.5) are now complete. The implementation plan has no remaining unchecked tasks.
 - The two new examples follow the established canister pattern but don't include static asset directories — they're pure route-handler examples. If the project later adds a convention for example READMEs, these could be enhanced.
+
+---
+
+## Session 7: Spec 7.7 — RouteContext Ergonomic Improvements
+
+**Date:** 2026-02-18
+
+### Tasks completed
+
+All 11 tasks (7.7.1–7.7.11) implemented successfully.
+
+#### 7.7.1–7.7.4: New convenience methods on `RouteContext`
+
+- **7.7.1** Added `RouteContext::header(&self, name: &str) -> Option<&str>` — case-insensitive lookup using `eq_ignore_ascii_case`, first match wins, zero-copy borrow from the existing `Vec<HeaderField>`.
+- **7.7.2** Added `RouteContext::body_to_str(&self) -> Result<&str, Utf8Error>` — strict UTF-8 check via `std::str::from_utf8`, zero-copy.
+- **7.7.3** Added `RouteContext::json<T: DeserializeOwned>(&self) -> Result<T, JsonBodyError>` with `JsonBodyError` enum (Utf8/Json variants, implements `Display` + `Error`). Added `serde_json = "1.0"` to `[dependencies]`.
+- **7.7.4** Added `RouteContext::form_data(&self) -> HashMap<String, String>` (wraps `parse_form_body`, infallible) and `RouteContext::form<T: DeserializeOwned>(&self) -> Result<T, FormBodyError>` with `FormBodyError` enum (Utf8/Deserialize variants, implements `Display` + `Error`).
+
+#### 7.7.5: Exports
+
+- **7.7.5** Exported `JsonBodyError` and `FormBodyError` from `src/lib.rs` via the `context` module re-export.
+
+#### 7.7.6: Unit tests
+
+- **7.7.6** Added 17 new unit tests in `src/context.rs` with a `test_ctx` helper: `header` (case-insensitive, missing, first-match-wins), `body_to_str` (valid, invalid UTF-8, empty), `json` (valid, invalid JSON, invalid UTF-8, empty body), `form_data` (basic, empty, url-encoded), `form` (valid, missing field, invalid UTF-8, empty body with optional fields).
+
+#### 7.7.7: Example and e2e test migration
+
+- **7.7.7** Migrated all verbose patterns across examples and tests:
+  - 3 `eq_ignore_ascii_case` header lookups → `ctx.header()` (in `api-authentication`, `certification-modes`, `test_canister/auth_test.rs`)
+  - 2 `String::from_utf8_lossy` + `serde_json::from_str` patterns → `ctx.json()` (in `json-api` items index and _itemId)
+  - 1 `parse_form_body(&ctx.body)` → `ctx.form_data()` (in `htmx-app` comments handler)
+  - 2 `certify_all_assets` calls → `certify_assets` (in `react-app` and `htmx-app`)
+  - Verified zero remaining verbose patterns in `examples/` and `tests/e2e/` via grep.
+
+#### 7.7.8–7.7.9: Dependency and internal cleanup
+
+- **7.7.8** Updated `ic-http-certification` and `ic-certification` in `Cargo.toml` from `"3.0.3"` to `"3.1"` to match actual resolved versions.
+- **7.7.9** Evaluated internal `eq_ignore_ascii_case` usage in `src/lib.rs` and `src/asset_router.rs` — both operate on raw `HttpResponse`/`HttpRequest` headers (not `RouteContext`), so no migration applicable.
+
+#### 7.7.10: syn-based source scanning
+
+- **7.7.10** Replaced three string-based scanning functions in `src/build.rs` with `syn::parse_file`-based AST walking:
+  - `scan_certification_attribute()` — walks `Item::Fn` attrs for `#[route(...)]` containing "certification"
+  - `has_search_params()` — walks `Item::Struct` for `pub struct SearchParams`
+  - `scan_route_attribute()` — walks `Item::Fn` attrs for `#[route(path = "...")]`
+  - Added `syn = { version = "2", features = ["full", "parsing"] }` to `[dependencies]`
+  - Added 5 new tests: multi-line `#[route(certification = ...)]`, comment-in-code false-positive rejection, multi-line struct detection, multi-line `#[route(path = ...)]`
+
+#### 7.7.11: Final verification
+
+- **7.7.11** Full verification passed:
+  - `cargo check` — clean
+  - `cargo test` — 283 unit tests pass, 10 doc tests pass
+  - `cargo doc --no-deps` — builds without warnings
+
+### Obstacles encountered
+
+- **`syn` as dependency vs build-dependency**: The spec describes adding `syn` to `[build-dependencies]`, but `src/build.rs` is a library module (not a root `build.rs` file) consumed by downstream crates' build scripts. Therefore `syn` was added to `[dependencies]` instead of `[build-dependencies]`.
+- **No `RouteContext`-based internal code to migrate**: Task 7.7.9 found that both remaining `eq_ignore_ascii_case` sites in `src/lib.rs` and `src/asset_router.rs` operate on raw `HttpResponse`/`HttpRequest` headers (not `RouteContext`), so no migration was needed. The spec anticipated this possibility.
+
+### Out-of-scope observations
+
+- All Phase 7 spec groups (7.1–7.7) are now complete. The implementation plan has zero remaining unchecked tasks.
+- The `syn` dependency adds to the library's compile footprint (~2-3s for clean builds). This is acceptable since `syn` is already transitively compiled via the `macros/` crate, and the correctness improvement (multi-line attribute support, comment/string-literal immunity) justifies it.
+- The `scan_pub_fns()` function (used by `detect_method_exports` and `has_pub_fn`) was not migrated to syn — it was not mentioned in the spec and its line-by-line scanning is adequate for `pub fn <name>(` detection. Consider migrating it in a future cleanup pass for full consistency.

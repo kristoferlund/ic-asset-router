@@ -1,5 +1,5 @@
-use ic_http_certification::{HttpResponse, StatusCode};
 use ic_asset_router::RouteContext;
+use ic_http_certification::{HttpResponse, StatusCode};
 use std::borrow::Cow;
 
 use crate::data;
@@ -22,8 +22,7 @@ pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
 ///
 /// Expects `{"name":"..."}`. Returns the created item with its assigned ID.
 pub fn post(ctx: RouteContext<()>) -> HttpResponse<'static> {
-    let body_str = String::from_utf8_lossy(&ctx.body);
-    let input: Result<data::CreateItem, _> = serde_json::from_str(&body_str);
+    let input: Result<data::CreateItem, _> = ctx.json();
 
     match input {
         Ok(create) => {

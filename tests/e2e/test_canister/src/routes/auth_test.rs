@@ -7,12 +7,7 @@ use std::borrow::Cow;
 /// different auth tokens produce different certified responses.
 #[ic_asset_router::route(certification = "authenticated")]
 pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
-    let auth = ctx
-        .headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("none");
+    let auth = ctx.header("authorization").unwrap_or("none");
     let body = format!("auth: {auth}");
     HttpResponse::builder()
         .with_status_code(StatusCode::OK)

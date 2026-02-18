@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use askama::Template;
-use ic_http_certification::{HttpResponse, StatusCode};
 use ic_asset_router::RouteContext;
+use ic_http_certification::{HttpResponse, StatusCode};
 
 use crate::data;
 

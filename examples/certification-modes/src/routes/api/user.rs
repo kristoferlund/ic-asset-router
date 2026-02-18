@@ -16,12 +16,7 @@ use std::borrow::Cow;
 #[route(certification = "authenticated")]
 pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
     // Extract the Authorization header (if present) for demonstration.
-    let auth = ctx
-        .headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("anonymous");
+    let auth = ctx.header("authorization").unwrap_or("anonymous");
 
     let body = format!(
         r#"{{"user":"demo","auth":"{}","mode":"authenticated"}}"#,
