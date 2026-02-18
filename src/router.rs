@@ -63,9 +63,7 @@ pub type HandlerResultFn = fn(HttpRequest, RouteParams) -> HandlerResult;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use ic_asset_router::HandlerResult;
-/// use ic_http_certification::{HttpRequest, HttpResponse};
-/// use ic_asset_router::router::RouteParams;
+/// use ic_asset_router::{HandlerResult, HttpRequest, HttpResponse, RouteParams};
 ///
 /// fn my_result_handler(req: HttpRequest, params: RouteParams) -> HandlerResult {
 ///     if content_unchanged() {
