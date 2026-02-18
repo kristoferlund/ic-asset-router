@@ -379,26 +379,21 @@ fn register_skip_routes(root_route_node: &router::RouteNode) {
         return;
     }
 
-    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+    // Insert skip certification tree entries directly into the shared tree
+    // WITHOUT storing a CertifiedAsset. This ensures the skip handler runs
+    // on every query call instead of serving a cached empty response.
+    HTTP_TREE.with(|tree| {
+        let mut tree = tree.borrow_mut();
         for path in &skip_paths {
-            let config = asset_router::AssetCertificationConfig {
-                mode: certification::CertificationMode::Skip,
-                content_type: Some("application/octet-stream".to_string()),
-                status_code: StatusCode::OK,
-                headers: vec![],
-                encodings: vec![],
-                fallback_for: None,
-                aliases: vec![],
-                certified_at: ic_cdk::api::time(),
-                ttl: None,
-                dynamic: false,
-            };
-
-            if let Err(_err) = asset_router.certify_asset(path, vec![], config) {
-                debug_log!("Failed to register skip entry for {}: {}", path, _err);
-            }
+            let tree_path = HttpCertificationPath::exact(path.to_string());
+            let certification = HttpCertification::skip();
+            let tree_entry = HttpCertificationTreeEntry::new(tree_path, certification);
+            tree.insert(&tree_entry);
         }
+    });
 
+    // Update the root hash to include the new skip entries.
+    ASSET_ROUTER.with_borrow(|asset_router| {
         certified_data_set(&asset_router.root_hash());
     });
 

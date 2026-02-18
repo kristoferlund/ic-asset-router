@@ -753,7 +753,6 @@ dependencies = [
  "candid",
  "ic-asset-router",
  "ic-cdk",
- "ic-http-certification",
  "include_dir",
 ]
 
