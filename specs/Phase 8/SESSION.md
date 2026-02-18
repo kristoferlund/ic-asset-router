@@ -90,3 +90,30 @@ All 6 tasks in spec 8.3 completed successfully:
 
 - `insert` and `insert_result` used to do their own `path.split('/').filter(...)` before delegating to the recursive `_insert`/`_insert_result`. Now `get_or_create_node` handles the split internally, making the public methods simpler.
 - The `certify_inner` unification exposed that `certify_dynamic_asset` previously didn't use `config.encodings` at all (only Identity from response body). With the unified code path, dynamic assets now correctly pick up any pre-compressed encodings passed in `config.encodings`, though no callers currently pass them for dynamic assets.
+
+## Session 4: Spec 8.4 — Harden Build Script
+
+### Accomplished
+
+All 6 tasks in spec 8.4 completed successfully:
+
+- **8.4.1**: Rewrote `scan_pub_fns` in `src/build.rs` to use `syn::parse_file` + `Item::Fn` iteration instead of text-based line matching (`pub fn <name>(` prefix scanning). The new implementation correctly handles multi-line signatures, generics, and only detects truly `pub` functions via `syn::Visibility::Public`. Unparseable files return an empty vec gracefully.
+
+- **8.4.2**: Added 3 unit tests for the rewritten `scan_pub_fns`: (a) ignores private functions (`fn get` without `pub`), (b) handles multi-line function signatures where `pub fn` and `(` are on different lines, (c) handles functions with generics (`pub fn get<T: Default>`).
+
+- **8.4.3**: Replaced the fragile `tokens.find("path")` substring matching in `scan_route_attribute` with proper `syn` meta parsing. The new implementation parses the attribute's `Meta::List` contents as `Punctuated<Meta, Token![,]>`, iterates looking for `Meta::NameValue` where the path is exactly the ident `path`, and extracts the `LitStr` value. This eliminates false matches on substrings like `xpath` or `mypath`.
+
+- **8.4.4**: Added 2 tests confirming `scan_route_attribute` does not match `#[route(xpath = "...")]` or `#[route(mypath = "...")]` — both return `None` as expected.
+
+- **8.4.5**: Replaced all bare `.unwrap()` on filesystem and path operations in the production (non-test) portion of `src/build.rs` with `.unwrap_or_else(|e| panic!("context: {e}"))` including the file/directory path in the message. Affected sites: `File::create`, `write_all`, `fs::write` (2 sites), `fs::read_dir`, `entry.unwrap()`, `file_name().unwrap()`, `to_str().unwrap()` (2 sites), `file_stem().unwrap()`, `fs::create_dir_all`. The one remaining `.unwrap()` in production code (`c.to_lowercase().next().unwrap()` in `camel_to_snake`) is infallible and not a filesystem operation.
+
+- **8.4.6**: Full verification passed — `cargo check` (clean), `cargo test` (294 passed, 0 failed), `cargo doc --no-deps` (no warnings).
+
+### Obstacles
+
+None. All tasks compiled and passed tests on the first attempt.
+
+### Out-of-scope observations
+
+- `scan_certification_attribute` still uses `tokens.contains("certification")` for detecting the certification key. This is technically a substring match, but the risk of false positives is much lower than `path` since `certification` is an uncommon substring. Spec 8.4 only required fixing `scan_route_attribute`.
+- The `camel_to_snake` function's `c.to_lowercase().next().unwrap()` was left as-is since `char::to_lowercase` is guaranteed to yield at least one character per the Unicode standard — this is infallible and not a filesystem operation.
