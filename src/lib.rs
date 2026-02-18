@@ -47,8 +47,7 @@
 //!
 //! ```rust,ignore
 //! // src/routes/index.rs
-//! use ic_http_certification::{HttpResponse, StatusCode};
-//! use ic_asset_router::RouteContext;
+//! use ic_asset_router::{HttpResponse, RouteContext, StatusCode};
 //! use std::borrow::Cow;
 //!
 //! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
@@ -271,8 +270,7 @@ use assets::get_asset_headers;
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
-    HttpCertificationTree, HttpCertificationTreeEntry, HttpRequest, HttpResponse, Method,
-    StatusCode,
+    HttpCertificationTree, HttpCertificationTreeEntry, Method,
 };
 use router::{RouteNode, RouteResult};
 
@@ -356,6 +354,7 @@ pub use context::{
     JsonBodyError, QueryParams, RouteContext,
 };
 pub use ic_asset_router_macros::route;
+pub use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
 pub use route_config::RouteConfig;
 pub use router::HandlerResult;
 

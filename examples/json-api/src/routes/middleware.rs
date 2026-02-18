@@ -1,5 +1,5 @@
 use ic_asset_router::router::RouteParams;
-use ic_http_certification::{HttpRequest, HttpResponse};
+use ic_asset_router::{HttpRequest, HttpResponse};
 
 /// Root-level CORS middleware.
 ///

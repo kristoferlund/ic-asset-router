@@ -1,5 +1,4 @@
-use ic_asset_router::RouteContext;
-use ic_http_certification::{HttpResponse, StatusCode};
+use ic_asset_router::{HttpResponse, RouteContext, StatusCode};
 use std::borrow::Cow;
 
 /// GET /json → returns {"ok":true} as application/json

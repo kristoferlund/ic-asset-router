@@ -41,8 +41,7 @@ fn main() {
 
 ```rust
 // src/routes/index.rs
-use ic_http_certification::{HttpResponse, StatusCode};
-use ic_asset_router::RouteContext;
+use ic_asset_router::{HttpResponse, RouteContext, StatusCode};
 use std::borrow::Cow;
 
 pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
@@ -62,7 +61,7 @@ pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
 ```rust
 // src/lib.rs
 use ic_cdk::{init, post_upgrade, query, update};
-use ic_http_certification::{HttpRequest, HttpResponse};
+use ic_asset_router::{HttpRequest, HttpResponse};
 
 pub mod routes;
 
@@ -174,8 +173,7 @@ Untyped query params are always available via `ctx.query`.
 
 ```rust
 // src/routes/middleware.rs
-use ic_http_certification::{HttpRequest, HttpResponse};
-use ic_asset_router::router::RouteParams;
+use ic_asset_router::{HttpRequest, HttpResponse, router::RouteParams};
 
 pub fn middleware(
     req: HttpRequest,
@@ -210,8 +208,7 @@ Place a `not_found.rs` file at the routes root (or in a subdirectory) to handle 
 
 ```rust
 // src/routes/not_found.rs
-use ic_http_certification::{HttpResponse, StatusCode};
-use ic_asset_router::RouteContext;
+use ic_asset_router::{HttpResponse, RouteContext, StatusCode};
 use std::borrow::Cow;
 
 pub fn handler(ctx: RouteContext<()>) -> HttpResponse<'static> {

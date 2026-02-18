@@ -1,5 +1,5 @@
+use ic_asset_router::{HttpRequest, HttpResponse};
 use ic_cdk::{init, post_upgrade, query, update};
-use ic_http_certification::{HttpRequest, HttpResponse};
 use include_dir::{include_dir, Dir};
 
 pub mod routes;

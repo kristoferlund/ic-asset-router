@@ -17,8 +17,8 @@
 //! to IC candid query calls. Use this when you need auth checking on every request
 //! with fast query-path performance (~200ms).
 
+use ic_asset_router::{HttpRequest, HttpResponse};
 use ic_cdk::{init, post_upgrade, query, update};
-use ic_http_certification::{HttpRequest, HttpResponse};
 
 pub mod routes;
 

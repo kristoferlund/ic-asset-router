@@ -2,8 +2,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::data;
-use ic_asset_router::RouteContext;
-use ic_http_certification::{HttpResponse, StatusCode};
+use ic_asset_router::{HttpResponse, RouteContext, StatusCode};
 use tera::{Context, Tera};
 
 use super::Params;

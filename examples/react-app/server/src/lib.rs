@@ -5,9 +5,8 @@ mod route_tree {
     include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
 }
 
-use ic_asset_router::{AssetConfig, HttpRequestOptions};
+use ic_asset_router::{AssetConfig, HttpRequest, HttpRequestOptions, HttpResponse};
 use ic_cdk::{init, post_upgrade, query, update};
-use ic_http_certification::{HttpRequest, HttpResponse};
 use include_dir::{include_dir, Dir};
 
 static ASSETS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../dist");
