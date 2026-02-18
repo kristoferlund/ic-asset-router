@@ -559,11 +559,12 @@ mod tests {
     }
 
     #[test]
-    fn test_authenticated_certification_has_certificate() {
+    fn test_authenticated_certification_always_upgrades() {
         let (_pic, client, base_url, _cid) = setup();
 
-        // First request to /auth_test triggers update.
-        // Send with Authorization header since the route uses Full certification.
+        // Full (authenticated) certification always upgrades to update to
+        // ensure each caller's auth headers are included in the proof.
+        // The response is re-certified on every request.
         let resp1 = get_with_headers(
             &client,
             &url_for(&base_url, "/auth_test"),
@@ -576,16 +577,17 @@ mod tests {
             "auth_test should echo the authorization header, got: {body1}"
         );
 
-        // Second request with same auth: served from certified cache.
+        // Second request with different auth also succeeds (not cached).
         let resp2 = get_with_headers(
             &client,
             &url_for(&base_url, "/auth_test"),
-            &[("Authorization", "Bearer token123")],
+            &[("Authorization", "Bearer other_token")],
         );
         assert_eq!(resp2.status().as_u16(), 200);
+        let body2 = resp2.text().unwrap();
         assert!(
-            has_certificate_header(&resp2),
-            "Authenticated (Full) mode response should have ic-certificate header"
+            body2.contains("Bearer other_token"),
+            "auth_test should echo the new authorization header, got: {body2}"
         );
     }
 
@@ -616,23 +618,18 @@ mod tests {
             "Skip route should have ic-certificate with skip proof in mixed-mode canister"
         );
 
-        // Auth route — trigger update then check cached.
+        // Auth route — Full mode always upgrades. Verify it returns correct
+        // content for different auth tokens (not cached across callers).
         let auth_resp1 = get_with_headers(
             &client,
             &url_for(&base_url, "/auth_test"),
             &[("Authorization", "Bearer mixed")],
         );
         assert_eq!(auth_resp1.status().as_u16(), 200);
-
-        let auth_resp2 = get_with_headers(
-            &client,
-            &url_for(&base_url, "/auth_test"),
-            &[("Authorization", "Bearer mixed")],
-        );
-        assert_eq!(auth_resp2.status().as_u16(), 200);
+        let auth_body = auth_resp1.text().unwrap();
         assert!(
-            has_certificate_header(&auth_resp2),
-            "Authenticated route should have ic-certificate in mixed-mode canister"
+            auth_body.contains("Bearer mixed"),
+            "Authenticated route should reflect the auth header"
         );
 
         // Default dynamic route (ResponseOnly) — trigger update then check cached.

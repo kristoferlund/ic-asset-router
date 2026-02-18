@@ -763,13 +763,23 @@ fn detect_method_exports(path: &Path) -> Vec<(&'static str, &'static str)> {
 /// multi-line attributes correctly.
 ///
 /// Returns `Some("ogimage.png")` if found, `None` otherwise.
+/// Check if a `syn::Attribute` path matches `route` or `ic_asset_router::route`.
+fn is_route_attribute(attr: &syn::Attribute) -> bool {
+    attr.path().is_ident("route") || {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        segments.len() == 2
+            && segments[0].ident == "ic_asset_router"
+            && segments[1].ident == "route"
+    }
+}
+
 fn scan_route_attribute(path: &Path) -> Option<String> {
     let source = fs::read_to_string(path).ok()?;
     let file = syn::parse_file(&source).ok()?;
     for item in &file.items {
         if let syn::Item::Fn(func) = item {
             for attr in &func.attrs {
-                if attr.path().is_ident("route") {
+                if is_route_attribute(attr) {
                     let tokens = attr
                         .meta
                         .require_list()
@@ -827,7 +837,7 @@ fn scan_certification_attribute(path: &Path) -> bool {
     for item in &file.items {
         if let syn::Item::Fn(func) = item {
             for attr in &func.attrs {
-                if attr.path().is_ident("route") {
+                if is_route_attribute(attr) {
                     let tokens = attr
                         .meta
                         .require_list()
@@ -1785,6 +1795,18 @@ pub fn get() -> () { todo!() }
         query_params = ["page", "limit"]
     )
 )]
+pub fn get() -> () { todo!() }
+"#,
+        );
+        assert!(scan_certification_attribute(&path));
+    }
+
+    #[test]
+    fn scan_certification_attribute_fully_qualified_path() {
+        let path = write_temp_file(
+            "cert_fq.rs",
+            r#"
+#[ic_asset_router::route(certification = "skip")]
 pub fn get() -> () { todo!() }
 "#,
         );
