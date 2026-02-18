@@ -492,6 +492,29 @@ fn error_response(status: u16, message: &str) -> HttpResponse<'static> {
         .build()
 }
 
+/// Check whether a dynamic asset is expired, considering both the asset's own
+/// TTL and the global [`CacheConfig`] fallback.
+///
+/// Returns `false` for static assets (they never expire) or when no TTL
+/// applies.
+fn is_asset_expired(asset: &asset_router::CertifiedAsset, path: &str, now_ns: u64) -> bool {
+    if !asset.is_dynamic() {
+        return false;
+    }
+    if asset.ttl.is_some() {
+        return asset.is_expired(now_ns);
+    }
+    // Fall back to global config TTL.
+    let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
+    match effective_ttl {
+        Some(ttl) => {
+            let expiry_ns = asset.certified_at.saturating_add(ttl.as_nanos() as u64);
+            now_ns >= expiry_ns
+        }
+        None => false,
+    }
+}
+
 /// Custom asset router with per-asset certification modes.
 pub mod asset_router;
 /// Static and dynamic asset certification, invalidation, and serving helpers.
@@ -700,6 +723,214 @@ impl Default for HttpRequestOptions {
     }
 }
 
+/// Attach a skip-certification proof to a response.
+///
+/// Adds the CEL skip expression header, borrows the shared HTTP
+/// certification tree, obtains the data certificate, constructs a
+/// witness, and appends the v2 certificate header. On success the
+/// response is modified in place. On failure (missing certificate or
+/// witness error) an appropriate error response is returned in the
+/// `Err` variant.
+fn attach_skip_certification(
+    path: &str,
+    response: &mut HttpResponse<'static>,
+) -> Result<(), HttpResponse<'static>> {
+    response.add_header((
+        CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+        DefaultCelBuilder::skip_certification().to_string(),
+    ));
+
+    HTTP_TREE.with(|tree| {
+        let tree = tree.borrow();
+
+        let cert = data_certificate().ok_or_else(|| {
+            error_response(500, "Internal Server Error: no data certificate available")
+        })?;
+
+        let tree_path = HttpCertificationPath::exact(path);
+        let certification = HttpCertification::skip();
+        let tree_entry = HttpCertificationTreeEntry::new(&tree_path, certification);
+
+        let witness = tree.witness(&tree_entry, path).map_err(|_| {
+            error_response(
+                500,
+                "Internal Server Error: failed to create certification witness",
+            )
+        })?;
+
+        add_v2_certificate_header(&cert, response, &witness, &tree_path.to_expr_path());
+
+        Ok(())
+    })
+}
+
+/// Handle the `NotFound` branch of `http_request`.
+///
+/// When certification is enabled, checks the canonical `/__not_found` cache
+/// entry: serves from cache if valid, upgrades if expired or missing. Also
+/// tries serving a static asset for the original path before upgrading.
+/// When certification is disabled, runs the not-found handler directly.
+fn handle_not_found_query(
+    req: HttpRequest,
+    path: &str,
+    root: &RouteNode,
+    certify: bool,
+) -> HttpResponse<'static> {
+    if certify {
+        // Check the unified AssetRouter for the canonical /__not_found entry.
+        let canonical_state = ASSET_ROUTER.with_borrow(|asset_router| {
+            asset_router
+                .get_asset(NOT_FOUND_CANONICAL_PATH)
+                .map(|asset| is_asset_expired(asset, NOT_FOUND_CANONICAL_PATH, ic_cdk::api::time()))
+        });
+
+        match canonical_state {
+            Some(true) => {
+                debug_log!("upgrading not-found (TTL expired for canonical path)");
+                return HttpResponse::builder().with_upgrade(true).build();
+            }
+            Some(false) => {
+                return ASSET_ROUTER.with_borrow(|asset_router| {
+                    let cert = match data_certificate() {
+                        Some(c) => c,
+                        None => {
+                            debug_log!("upgrading not-found (no data certificate)");
+                            return HttpResponse::builder().with_upgrade(true).build();
+                        }
+                    };
+                    if let Some((mut response, witness, expr_path)) = asset_router.serve_asset(&req)
+                    {
+                        add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
+                        debug_log!("serving cached not-found for {}", path);
+                        response
+                    } else {
+                        debug_log!("upgrading not-found (serve_asset failed for canonical path)");
+                        HttpResponse::builder().with_upgrade(true).build()
+                    }
+                });
+            }
+            None => {
+                // Try serving a static asset for the original path.
+                let maybe_response = ASSET_ROUTER.with_borrow(|asset_router| {
+                    let cert = data_certificate()?;
+                    let (mut response, witness, expr_path) = asset_router.serve_asset(&req)?;
+                    add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
+                    Some(response)
+                });
+                if let Some(response) = maybe_response {
+                    debug_log!("serving static asset for {}", path);
+                    return response;
+                }
+
+                debug_log!("upgrading not-found (no cached entry for {})", path);
+                return HttpResponse::builder().with_upgrade(true).build();
+            }
+        }
+    }
+
+    // Non-certified mode: execute the not-found handler directly.
+    if let Some(response) = root.execute_not_found_with_middleware(path, req) {
+        response
+    } else {
+        HttpResponse::not_found(
+            b"Not Found",
+            vec![("Content-Type".into(), "text/plain".into())],
+        )
+        .build()
+    }
+}
+
+/// Serve from the asset router cache, or upgrade to an update call.
+///
+/// Checks the asset router for a cached certified response at `path`.
+/// Returns the certified response if the asset exists and is not expired,
+/// or an upgrade response (`upgrade: true`) if the asset is missing,
+/// expired, or the data certificate is unavailable.
+fn serve_from_cache_or_upgrade(req: &HttpRequest, path: &str) -> HttpResponse<'static> {
+    enum CacheState {
+        Missing,
+        Expired,
+        Valid,
+    }
+
+    let cache_state = ASSET_ROUTER.with_borrow(|asset_router| match asset_router.get_asset(path) {
+        Some(asset) => {
+            if is_asset_expired(asset, path, ic_cdk::api::time()) {
+                CacheState::Expired
+            } else {
+                CacheState::Valid
+            }
+        }
+        None => CacheState::Missing,
+    });
+
+    match cache_state {
+        CacheState::Missing => {
+            debug_log!("upgrading (no asset: {})", path);
+            HttpResponse::builder().with_upgrade(true).build()
+        }
+        CacheState::Expired => {
+            debug_log!("upgrading (TTL expired for {})", path);
+            HttpResponse::builder().with_upgrade(true).build()
+        }
+        CacheState::Valid => ASSET_ROUTER.with_borrow(|asset_router| {
+            let cert = match data_certificate() {
+                Some(c) => c,
+                None => {
+                    debug_log!("upgrading (no data certificate)");
+                    return HttpResponse::builder().with_upgrade(true).build();
+                }
+            };
+            if let Some((mut response, witness, expr_path)) = asset_router.serve_asset(req) {
+                add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
+                debug_log!("serving directly");
+                response
+            } else {
+                debug_log!("upgrading");
+                HttpResponse::builder().with_upgrade(true).build()
+            }
+        }),
+    }
+}
+
+/// Serve a skip-mode route (the `CertificationMode::Skip` branch).
+///
+/// Runs the handler through the middleware chain, then attaches the
+/// skip-certification proof that was pre-registered at init time.
+fn serve_skip_mode(
+    root: &RouteNode,
+    path: &str,
+    handler: router::HandlerFn,
+    req: HttpRequest,
+    params: router::RouteParams,
+) -> HttpResponse<'static> {
+    debug_log!("skip mode: running handler inline for {}", path);
+    let mut response = root.execute_with_middleware(path, handler, req, params);
+    match attach_skip_certification(path, &mut response) {
+        Ok(()) => response,
+        Err(err_resp) => err_resp,
+    }
+}
+
+/// Serve a response without certification (the `certify == false` branch).
+///
+/// Runs the handler through the middleware chain, then attaches a
+/// skip-certification proof to the response.
+fn serve_uncertified(
+    root: &RouteNode,
+    path: &str,
+    handler: router::HandlerFn,
+    req: HttpRequest,
+    params: router::RouteParams,
+) -> HttpResponse<'static> {
+    debug_log!("Serving {} without certification", path);
+    let mut response = root.execute_with_middleware(path, handler, req, params);
+    match attach_skip_certification(path, &mut response) {
+        Ok(()) => response,
+        Err(err_resp) => err_resp,
+    }
+}
+
 /// Handle an HTTP query-path request.
 ///
 /// This is the IC `http_request` entry point. It resolves the incoming
@@ -738,317 +969,26 @@ pub fn http_request(
 
     match root_route_node.resolve(&path, &method) {
         RouteResult::Found(handler, params, _result_handler, pattern) => match opts.certify {
-            false => {
-                debug_log!("Serving {} without certification", path);
-                let mut response =
-                    root_route_node.execute_with_middleware(&path, handler, req, params);
-
-                // Add the CEL expression header so the boundary node knows
-                // this response uses skip certification.
-                response.add_header((
-                    CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
-                    DefaultCelBuilder::skip_certification().to_string(),
-                ));
-
-                HTTP_TREE.with(|tree| {
-                    let tree = tree.borrow();
-
-                    let cert = match data_certificate() {
-                        Some(c) => c,
-                        None => {
-                            return error_response(
-                                500,
-                                "Internal Server Error: no data certificate available",
-                            );
-                        }
-                    };
-
-                    let tree_path = HttpCertificationPath::exact(&path);
-                    let certification = HttpCertification::skip();
-                    let tree_entry = HttpCertificationTreeEntry::new(&tree_path, certification);
-
-                    let witness = match tree.witness(&tree_entry, &path) {
-                        Ok(w) => w,
-                        Err(_) => {
-                            return error_response(
-                                500,
-                                "Internal Server Error: failed to create certification witness",
-                            );
-                        }
-                    };
-
-                    add_v2_certificate_header(
-                        &cert,
-                        &mut response,
-                        &witness,
-                        &tree_path.to_expr_path(),
-                    );
-
-                    response
-                })
-            }
+            false => serve_uncertified(root_route_node, &path, handler, req, params),
             true => {
-                // Full certification mode (e.g. authenticated routes) binds the
-                // proof to specific request header values. A cached response
-                // certified for Alice's token will fail verification when served
-                // to Bob. Always upgrade Full-mode routes to http_request_update
-                // so each request gets a freshly certified response.
                 let route_config = root_route_node.get_route_config(&pattern);
                 let cert_mode = route_config.map(|rc| &rc.certification);
 
-                // Full certification mode binds the proof to specific request
-                // header values. Always upgrade to http_request_update so each
-                // caller gets a freshly certified response.
+                // Full mode binds proof to request headers — always upgrade.
                 if matches!(cert_mode, Some(certification::CertificationMode::Full(_))) {
                     debug_log!("upgrading (full certification mode: {})", path);
                     return HttpResponse::builder().with_upgrade(true).build();
                 }
 
-                // Skip certification mode: run the handler on every query call,
-                // like a candid query call. The skip tree entry was registered
-                // at init time by `register_skip_routes`, so we just run the
-                // handler and attach the skip certification witness.
                 if matches!(cert_mode, Some(certification::CertificationMode::Skip)) {
-                    debug_log!("skip mode: running handler inline for {}", path);
-                    let mut response =
-                        root_route_node.execute_with_middleware(&path, handler, req, params);
-
-                    // Add the CEL expression header so the boundary node knows
-                    // this response uses skip certification.
-                    response.add_header((
-                        CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
-                        DefaultCelBuilder::skip_certification().to_string(),
-                    ));
-
-                    // Add skip certification proof from the shared tree.
-                    return HTTP_TREE.with(|tree| {
-                        let tree = tree.borrow();
-                        let cert = match data_certificate() {
-                            Some(c) => c,
-                            None => {
-                                return error_response(
-                                    500,
-                                    "Internal Server Error: no data certificate available",
-                                );
-                            }
-                        };
-
-                        let tree_path = HttpCertificationPath::exact(path.to_string());
-                        let tree_certification = HttpCertification::skip();
-                        let tree_entry =
-                            HttpCertificationTreeEntry::new(tree_path.clone(), tree_certification);
-
-                        let witness = match tree.witness(&tree_entry, &path) {
-                            Ok(w) => w,
-                            Err(_) => {
-                                return error_response(
-                                    500,
-                                    "Internal Server Error: failed to create skip certification witness",
-                                );
-                            }
-                        };
-
-                        add_v2_certificate_header(
-                            &cert,
-                            &mut response,
-                            &witness,
-                            &tree_path.to_expr_path(),
-                        );
-                        response
-                    });
+                    return serve_skip_mode(root_route_node, &path, handler, req, params);
                 }
 
-                // Check the unified AssetRouter to determine cache state.
-                // Three outcomes:
-                //   Missing  — no asset at this path; upgrade to generate.
-                //   Expired  — dynamic asset with elapsed TTL; upgrade to regenerate.
-                //   Valid    — serve from asset router.
-                //
-                // We check the asset directly (not via serve_asset) to avoid
-                // matching a fallback when the exact asset was invalidated.
-                enum CacheState {
-                    Missing,
-                    Expired,
-                    Valid,
-                }
-
-                let cache_state = ASSET_ROUTER.with_borrow(|asset_router| {
-                    match asset_router.get_asset(&path) {
-                        Some(asset) => {
-                            if asset.is_dynamic() {
-                                // Check TTL: first asset's own TTL, then global config.
-                                let is_expired = if asset.ttl.is_some() {
-                                    asset.is_expired(ic_cdk::api::time())
-                                } else {
-                                    // Check global config TTL.
-                                    let effective_ttl = ROUTER_CONFIG
-                                        .with(|c| c.borrow().cache_config.effective_ttl(&path));
-                                    if let Some(ttl) = effective_ttl {
-                                        let now_ns = ic_cdk::api::time();
-                                        let expiry_ns = asset
-                                            .certified_at
-                                            .saturating_add(ttl.as_nanos() as u64);
-                                        now_ns >= expiry_ns
-                                    } else {
-                                        false
-                                    }
-                                };
-                                if is_expired {
-                                    CacheState::Expired
-                                } else {
-                                    CacheState::Valid
-                                }
-                            } else {
-                                // Static asset — always valid.
-                                CacheState::Valid
-                            }
-                        }
-                        None => CacheState::Missing,
-                    }
-                });
-
-                match cache_state {
-                    CacheState::Missing => {
-                        debug_log!("upgrading (no asset: {})", path);
-                        HttpResponse::builder().with_upgrade(true).build()
-                    }
-                    CacheState::Expired => {
-                        debug_log!("upgrading (TTL expired for {})", path);
-                        HttpResponse::builder().with_upgrade(true).build()
-                    }
-                    CacheState::Valid => ASSET_ROUTER.with_borrow(|asset_router| {
-                        let cert = match data_certificate() {
-                            Some(c) => c,
-                            None => {
-                                debug_log!("upgrading (no data certificate)");
-                                return HttpResponse::builder().with_upgrade(true).build();
-                            }
-                        };
-                        if let Some((mut response, witness, expr_path)) =
-                            asset_router.serve_asset(&req)
-                        {
-                            add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
-                            debug_log!("serving directly");
-                            response
-                        } else {
-                            debug_log!("upgrading");
-                            HttpResponse::builder().with_upgrade(true).build()
-                        }
-                    }),
-                }
+                serve_from_cache_or_upgrade(&req, &path)
             }
         },
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
-        RouteResult::NotFound => {
-            if opts.certify {
-                // Check the unified AssetRouter for the canonical /__not_found entry.
-                // All 404 responses are certified under this single path to
-                // prevent memory growth from bot scans.
-                let canonical_state = ASSET_ROUTER.with_borrow(|asset_router| {
-                    asset_router
-                        .get_asset(NOT_FOUND_CANONICAL_PATH)
-                        .map(|asset| {
-                            if asset.is_dynamic() {
-                                // Check TTL.
-                                let is_expired = if asset.ttl.is_some() {
-                                    asset.is_expired(ic_cdk::api::time())
-                                } else {
-                                    let effective_ttl = ROUTER_CONFIG.with(|c| {
-                                        c.borrow()
-                                            .cache_config
-                                            .effective_ttl(NOT_FOUND_CANONICAL_PATH)
-                                    });
-                                    if let Some(ttl) = effective_ttl {
-                                        let now_ns = ic_cdk::api::time();
-                                        let expiry_ns = asset
-                                            .certified_at
-                                            .saturating_add(ttl.as_nanos() as u64);
-                                        now_ns >= expiry_ns
-                                    } else {
-                                        false
-                                    }
-                                };
-                                is_expired
-                            } else {
-                                false // Static not-found assets don't expire
-                            }
-                        })
-                });
-
-                match canonical_state {
-                    Some(true) => {
-                        // Cached but TTL-expired — upgrade to regenerate.
-                        debug_log!("upgrading not-found (TTL expired for canonical path)");
-                        return HttpResponse::builder().with_upgrade(true).build();
-                    }
-                    Some(false) => {
-                        // Cached and valid — serve from AssetRouter using the
-                        // original request. The /__not_found asset is registered
-                        // as a fallback for scope "/", so serve_asset() will
-                        // match any path that has no exact asset and produce a
-                        // correctly certified response for the original URL.
-                        return ASSET_ROUTER.with_borrow(|asset_router| {
-                            let cert = match data_certificate() {
-                                Some(c) => c,
-                                None => {
-                                    debug_log!("upgrading not-found (no data certificate)");
-                                    return HttpResponse::builder().with_upgrade(true).build();
-                                }
-                            };
-                            if let Some((mut response, witness, expr_path)) =
-                                asset_router.serve_asset(&req)
-                            {
-                                add_v2_certificate_header(
-                                    &cert,
-                                    &mut response,
-                                    &witness,
-                                    &expr_path,
-                                );
-                                debug_log!("serving cached not-found for {}", path);
-                                response
-                            } else {
-                                debug_log!(
-                                    "upgrading not-found (serve_asset failed for canonical path)"
-                                );
-                                HttpResponse::builder().with_upgrade(true).build()
-                            }
-                        });
-                    }
-                    None => {
-                        // Not in router. Try serving a static asset
-                        // for the original path before triggering the update.
-                        let maybe_response = ASSET_ROUTER.with_borrow(|asset_router| {
-                            let cert = data_certificate()?;
-                            let (mut response, witness, expr_path) =
-                                asset_router.serve_asset(&req)?;
-                            add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
-                            Some(response)
-                        });
-                        if let Some(response) = maybe_response {
-                            debug_log!("serving static asset for {}", path);
-                            return response;
-                        }
-
-                        // No cached response at all — upgrade to run the
-                        // not-found handler.
-                        debug_log!("upgrading not-found (no cached entry for {})", path);
-                        return HttpResponse::builder().with_upgrade(true).build();
-                    }
-                }
-            }
-
-            // Non-certified mode: execute the not-found handler directly
-            // without upgrade, same as any other non-certified response.
-            if let Some(response) = root_route_node.execute_not_found_with_middleware(&path, req) {
-                response
-            } else {
-                HttpResponse::not_found(
-                    b"Not Found",
-                    vec![("Content-Type".into(), "text/plain".into())],
-                )
-                .build()
-            }
-        }
+        RouteResult::NotFound => handle_not_found_query(req, &path, root_route_node, opts.certify),
     }
 }
 
@@ -1183,6 +1123,88 @@ fn certify_dynamic_response_with_ttl(
     response
 }
 
+/// Handle the `NotFound` branch of `http_request_update`.
+///
+/// Checks the canonical `/__not_found` cache entry. If a valid (non-expired)
+/// cached 404 exists, serves it directly. Otherwise, executes the not-found
+/// handler through the middleware chain, certifies the response at the
+/// canonical path as a fallback, and caches it.
+fn handle_not_found_update(
+    req: HttpRequest,
+    path: &str,
+    root: &RouteNode,
+) -> HttpResponse<'static> {
+    let cached_valid = ASSET_ROUTER.with_borrow(|asset_router| {
+        match asset_router.get_asset(NOT_FOUND_CANONICAL_PATH) {
+            Some(asset) => !is_asset_expired(asset, NOT_FOUND_CANONICAL_PATH, ic_cdk::api::time()),
+            None => false,
+        }
+    });
+
+    if cached_valid {
+        debug_log!("not-found canonical entry still valid, serving from cache");
+        return ASSET_ROUTER.with_borrow(|asset_router| {
+            let canonical_req = HttpRequest::get(NOT_FOUND_CANONICAL_PATH.to_string()).build();
+            match asset_router.serve_asset(&canonical_req) {
+                Some((resp, _witness, _expr_path)) => resp,
+                None => error_response(
+                    500,
+                    "Internal Server Error: cached not-found entry missing from asset router",
+                ),
+            }
+        });
+    }
+
+    // Execute the not-found handler and certify at the canonical path.
+    let response = if let Some(response) = root.execute_not_found_with_middleware(path, req) {
+        response
+    } else {
+        HttpResponse::not_found(
+            b"Not Found",
+            vec![("Content-Type".into(), "text/plain".into())],
+        )
+        .build()
+    };
+    certify_dynamic_response_inner(
+        response,
+        NOT_FOUND_CANONICAL_PATH,
+        Some("/".to_string()),
+        certification::CertificationMode::response_only(),
+        None,
+    )
+}
+
+/// Handle a `HandlerResult::NotModified` result in the update path.
+///
+/// Resets the TTL timer on the cached asset (if TTL-based caching is active),
+/// then serves the existing cached response from the asset router.
+fn handle_not_modified(req: &HttpRequest, path: &str) -> HttpResponse<'static> {
+    debug_log!("handler returned NotModified for {}", path);
+
+    // Reset the certified_at timestamp so the TTL timer restarts.
+    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+        if let Some(asset) = asset_router.get_asset_mut(path) {
+            if asset.ttl.is_some() {
+                asset.certified_at = ic_cdk::api::time();
+            }
+        }
+    });
+
+    // Serve the existing cached response from the asset router.
+    ASSET_ROUTER.with_borrow(|asset_router| match asset_router.serve_asset(req) {
+        Some((mut resp, witness, expr_path)) => {
+            if let Some(cert) = data_certificate() {
+                add_v2_certificate_header(&cert, &mut resp, &witness, &expr_path);
+            }
+            resp
+        }
+        None => error_response(
+            500,
+            "Internal Server Error: NotModified but no cached asset found",
+        ),
+    })
+}
+
 /// Handle an HTTP update-path request.
 ///
 /// This is the IC `http_request_update` entry point. It runs the matched
@@ -1205,68 +1227,26 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
 
     match root_route_node.resolve(&path, &method) {
         RouteResult::Found(handler, params, result_handler, pattern) => {
-            // Look up the per-route certification configuration.
             let route_config = root_route_node.get_route_config(&pattern);
             let cert_mode = route_config
                 .map(|rc| rc.certification.clone())
                 .unwrap_or_else(certification::CertificationMode::response_only);
             let route_ttl = route_config.and_then(|rc| rc.ttl);
 
-            // Skip-mode routes are handled entirely on the query path.
-            // They should never reach http_request_update. If they do
-            // (e.g. due to a stale upgrade response), just run the handler
-            // and return without re-certifying.
+            // Skip-mode routes are handled on the query path; if one arrives
+            // here (stale upgrade), just run the handler without re-certifying.
             if matches!(&cert_mode, certification::CertificationMode::Skip) {
                 debug_log!("skip mode in update path (unexpected): {}", path);
                 return root_route_node.execute_with_middleware(&path, handler, req, params);
             }
 
-            // If a HandlerResultFn is registered, call it first to check for
-            // NotModified. This avoids running the full middleware + certification
-            // pipeline when the handler signals that the content hasn't changed.
+            // Check for NotModified before running the full pipeline.
             if let Some(result_fn) = result_handler {
-                let result = result_fn(req.clone(), params.clone());
-                match result {
+                match result_fn(req.clone(), params.clone()) {
                     router::HandlerResult::NotModified => {
-                        debug_log!("handler returned NotModified for {}", path);
-
-                        // Reset the certified_at timestamp if TTL-based caching
-                        // is active. The content was confirmed fresh, so the TTL
-                        // timer should restart.
-                        ASSET_ROUTER.with_borrow_mut(|asset_router| {
-                            if let Some(asset) = asset_router.get_asset_mut(&path) {
-                                if asset.ttl.is_some() {
-                                    asset.certified_at = ic_cdk::api::time();
-                                }
-                            }
-                        });
-
-                        // Serve the existing cached response from the asset router.
-                        return ASSET_ROUTER.with_borrow(|asset_router| {
-                            match asset_router.serve_asset(&req) {
-                                Some((mut resp, witness, expr_path)) => {
-                                    // In an update call, data_certificate() may be unavailable.
-                                    // Try to add cert header; if not available, return without it.
-                                    // The next query call will attach the valid proof.
-                                    if let Some(cert) = data_certificate() {
-                                        add_v2_certificate_header(
-                                            &cert, &mut resp, &witness, &expr_path,
-                                        );
-                                    }
-                                    resp
-                                }
-                                None => error_response(
-                                    500,
-                                    "Internal Server Error: NotModified but no cached asset found",
-                                ),
-                            }
-                        });
+                        return handle_not_modified(&req, &path);
                     }
                     router::HandlerResult::Response(response) => {
-                        // Handler produced a new response — proceed with the
-                        // standard certification pipeline below. We use the
-                        // response from the HandlerResultFn directly (middleware
-                        // has already been bypassed for result handlers).
                         return certify_dynamic_response_with_ttl(
                             response,
                             &path,
@@ -1279,7 +1259,7 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                 }
             }
 
-            // Standard path: call handler through middleware chain, then certify.
+            // Standard path: call handler through middleware, then certify.
             let response =
                 root_route_node.execute_with_middleware(&path, handler, req.clone(), params);
             certify_dynamic_response_with_ttl(
@@ -1292,74 +1272,7 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
             )
         }
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
-        RouteResult::NotFound => {
-            // Check if the canonical 404 entry already has a valid cached
-            // response. If so, skip re-execution and serve directly.
-            let cached_valid = ASSET_ROUTER.with_borrow(|asset_router| {
-                if let Some(asset) = asset_router.get_asset(NOT_FOUND_CANONICAL_PATH) {
-                    if asset.is_dynamic() {
-                        let is_expired = if asset.ttl.is_some() {
-                            asset.is_expired(ic_cdk::api::time())
-                        } else {
-                            let effective_ttl = ROUTER_CONFIG.with(|c| {
-                                c.borrow()
-                                    .cache_config
-                                    .effective_ttl(NOT_FOUND_CANONICAL_PATH)
-                            });
-                            if let Some(ttl) = effective_ttl {
-                                let now_ns = ic_cdk::api::time();
-                                let expiry_ns =
-                                    asset.certified_at.saturating_add(ttl.as_nanos() as u64);
-                                now_ns >= expiry_ns
-                            } else {
-                                false
-                            }
-                        };
-                        !is_expired
-                    } else {
-                        true // Static not-found asset is always valid
-                    }
-                } else {
-                    false
-                }
-            });
-
-            if cached_valid {
-                // Already certified and not expired — serve from asset router.
-                debug_log!("not-found canonical entry still valid, serving from cache");
-                return ASSET_ROUTER.with_borrow(|asset_router| {
-                    let canonical_req =
-                        HttpRequest::get(NOT_FOUND_CANONICAL_PATH.to_string()).build();
-                    match asset_router.serve_asset(&canonical_req) {
-                        Some((resp, _witness, _expr_path)) => resp,
-                        None => error_response(
-                            500,
-                            "Internal Server Error: cached not-found entry missing from asset router",
-                        ),
-                    }
-                });
-            }
-
-            // Execute the not-found handler and certify at the canonical path.
-            let response = if let Some(response) =
-                root_route_node.execute_not_found_with_middleware(&path, req)
-            {
-                response
-            } else {
-                HttpResponse::not_found(
-                    b"Not Found",
-                    vec![("Content-Type".into(), "text/plain".into())],
-                )
-                .build()
-            };
-            certify_dynamic_response_inner(
-                response,
-                NOT_FOUND_CANONICAL_PATH,
-                Some("/".to_string()),
-                certification::CertificationMode::response_only(),
-                None,
-            )
-        }
+        RouteResult::NotFound => handle_not_found_update(req, &path, root_route_node),
     }
 }
 

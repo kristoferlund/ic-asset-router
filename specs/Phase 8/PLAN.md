@@ -60,19 +60,19 @@ This is the largest spec. Split into two sub-sections: query path and update pat
 
 #### 8.1A — Extract shared helpers and decompose http_request
 
-- [ ] **8.1.1** Extract `is_asset_expired(asset, path, now_ns) -> bool` as a free function in `src/lib.rs`. Must check asset's own TTL first, then fall back to `ROUTER_CONFIG` global TTL. Replace all 4 inline copies (two in `http_request`, one in `http_request_update`, verify if a fourth exists).
-- [ ] **8.1.2** Extract `attach_skip_certification(path: &str, response: &mut HttpResponse) -> Result<(), HttpResponse>` — the shared logic for adding CEL skip header, borrowing HTTP_TREE, getting data_certificate, building witness, and calling `add_v2_certificate_header`. Used by both the `certify=false` and `Skip` mode branches.
-- [ ] **8.1.3** Extract `serve_uncertified(...)` from the `opts.certify == false` branch — runs handler via `execute_with_middleware`, then calls `attach_skip_certification`.
-- [ ] **8.1.4** Extract `serve_skip_mode(...)` from the `Skip` certification mode branch — same pattern, delegates to `attach_skip_certification`.
-- [ ] **8.1.5** Extract `serve_from_cache_or_upgrade(req, path)` from the cache-check + asset-router serve logic in the `certify == true` Found branch.
+- [x] **8.1.1** Extract `is_asset_expired(asset, path, now_ns) -> bool` as a free function in `src/lib.rs`. Must check asset's own TTL first, then fall back to `ROUTER_CONFIG` global TTL. Replace all 4 inline copies (two in `http_request`, one in `http_request_update`, verify if a fourth exists).
+- [x] **8.1.2** Extract `attach_skip_certification(path: &str, response: &mut HttpResponse) -> Result<(), HttpResponse>` — the shared logic for adding CEL skip header, borrowing HTTP_TREE, getting data_certificate, building witness, and calling `add_v2_certificate_header`. Used by both the `certify=false` and `Skip` mode branches.
+- [x] **8.1.3** Extract `serve_uncertified(...)` from the `opts.certify == false` branch — runs handler via `execute_with_middleware`, then calls `attach_skip_certification`.
+- [x] **8.1.4** Extract `serve_skip_mode(...)` from the `Skip` certification mode branch — same pattern, delegates to `attach_skip_certification`.
+- [x] **8.1.5** Extract `serve_from_cache_or_upgrade(req, path)` from the cache-check + asset-router serve logic in the `certify == true` Found branch.
 
 #### 8.1B — Decompose http_request_update and verify
 
-- [ ] **8.1.6** Extract `handle_not_found_query(req, path, root, opts)` from the `NotFound` branch of `http_request`.
-- [ ] **8.1.7** Extract `handle_not_modified(req, path)` from the `HandlerResult::NotModified` branch of `http_request_update`.
-- [ ] **8.1.8** Extract `handle_not_found_update(req, path, root)` from the `NotFound` branch of `http_request_update`.
-- [ ] **8.1.9** Verify: `http_request` top-level body is under 60 lines. `http_request_update` top-level body is under 60 lines. No extracted helper exceeds 80 lines.
-- [ ] **8.1.10** Verify: `cargo check`, `cargo test`, and `cargo doc --no-deps` pass with no regressions or new warnings.
+- [x] **8.1.6** Extract `handle_not_found_query(req, path, root, opts)` from the `NotFound` branch of `http_request`.
+- [x] **8.1.7** Extract `handle_not_modified(req, path)` from the `HandlerResult::NotModified` branch of `http_request_update`.
+- [x] **8.1.8** Extract `handle_not_found_update(req, path, root)` from the `NotFound` branch of `http_request_update`.
+- [x] **8.1.9** Verify: `http_request` top-level body is under 60 lines. `http_request_update` top-level body is under 60 lines. No extracted helper exceeds 80 lines.
+- [x] **8.1.10** Verify: `cargo check`, `cargo test`, and `cargo doc --no-deps` pass with no regressions or new warnings.
 
 ---
 
