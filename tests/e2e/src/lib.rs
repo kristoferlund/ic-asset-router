@@ -493,11 +493,6 @@ mod tests {
         resp.headers().get("ic-certificate").is_some()
     }
 
-    /// Check whether a response carries the `ic-certificateexpression` header.
-    fn has_certificate_expression_header(resp: &reqwest::blocking::Response) -> bool {
-        resp.headers().get("ic-certificateexpression").is_some()
-    }
-
     // -----------------------------------------------------------------------
     // 7.6 — Integration Tests for Certification Modes
     // -----------------------------------------------------------------------

@@ -24,12 +24,6 @@ pub fn certify_assets(asset_dir: &Dir<'static>) {
     certify_assets_with_mode(asset_dir, CertificationMode::response_only())
 }
 
-/// Backward-compatible alias for [`certify_assets`].
-#[deprecated(since = "0.0.2", note = "Renamed to `certify_assets`")]
-pub fn certify_all_assets(asset_dir: &Dir<'static>) {
-    certify_assets(asset_dir)
-}
-
 /// Certify all assets in the given directory with the specified certification mode.
 ///
 /// Walks `asset_dir` recursively, determines MIME types, applies the global
