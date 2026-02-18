@@ -36,6 +36,7 @@ pub type HeaderField = (String, String);
 /// pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> { /* ... */ }
 /// ```
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct RouteConfig {
     /// Certification mode for this route.
     pub certification: CertificationMode,
@@ -50,15 +51,6 @@ pub struct RouteConfig {
     pub headers: Vec<HeaderField>,
 }
 
-impl Default for RouteConfig {
-    fn default() -> Self {
-        Self {
-            certification: CertificationMode::response_only(),
-            ttl: None,
-            headers: vec![],
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

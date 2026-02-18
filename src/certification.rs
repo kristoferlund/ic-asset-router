@@ -1,32 +1,32 @@
-/// Certification mode configuration for HTTP responses.
-///
-/// IC HTTP certification has three fundamental modes that determine which
-/// parts of the HTTP request/response are hashed and cryptographically
-/// certified. These types let you configure certification granularity
-/// per-asset or per-route.
-///
-/// # Modes
-///
-/// - [`CertificationMode::Skip`] — No certification. Fastest, use for public
-///   endpoints where tampering risk is acceptable.
-/// - [`CertificationMode::ResponseOnly`] — Only the response is certified.
-///   Good for static assets where the response depends only on the URL path.
-/// - [`CertificationMode::Full`] — Both request and response are certified.
-///   Required when the response depends on request headers (e.g.,
-///   `Authorization`, `Accept`).
-///
-/// # Choosing a Mode
-///
-/// **Response-only (default)** is correct for 90% of routes — use it when
-/// the response depends only on the URL path and the canister state.
-///
-/// **Skip** is appropriate for health-check or status endpoints where
-/// tampering has no security impact and maximum performance is desired.
-///
-/// **Full** (or the [`CertificationMode::authenticated`] preset) is
-/// required when the response depends on *who* is making the request
-/// (e.g., the `Authorization` header). Without full certification a
-/// malicious replica could serve one user's response to another.
+//! Certification mode configuration for HTTP responses.
+//!
+//! IC HTTP certification has three fundamental modes that determine which
+//! parts of the HTTP request/response are hashed and cryptographically
+//! certified. These types let you configure certification granularity
+//! per-asset or per-route.
+//!
+//! # Modes
+//!
+//! - [`CertificationMode::Skip`] — No certification. Fastest, use for public
+//!   endpoints where tampering risk is acceptable.
+//! - [`CertificationMode::ResponseOnly`] — Only the response is certified.
+//!   Good for static assets where the response depends only on the URL path.
+//! - [`CertificationMode::Full`] — Both request and response are certified.
+//!   Required when the response depends on request headers (e.g.,
+//!   `Authorization`, `Accept`).
+//!
+//! # Choosing a Mode
+//!
+//! **Response-only (default)** is correct for 90% of routes — use it when
+//! the response depends only on the URL path and the canister state.
+//!
+//! **Skip** is appropriate for health-check or status endpoints where
+//! tampering has no security impact and maximum performance is desired.
+//!
+//! **Full** (or the [`CertificationMode::authenticated`] preset) is
+//! required when the response depends on *who* is making the request
+//! (e.g., the `Authorization` header). Without full certification a
+//! malicious replica could serve one user's response to another.
 
 /// Certification mode for HTTP responses.
 ///
@@ -263,6 +263,7 @@ impl Default for ResponseOnlyConfig {
 /// assert_eq!(config.query_params, vec!["page", "limit"]);
 /// ```
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct FullConfig {
     /// Request headers to include in the certification hash.
     ///
@@ -281,15 +282,6 @@ pub struct FullConfig {
     pub response: ResponseOnlyConfig,
 }
 
-impl Default for FullConfig {
-    fn default() -> Self {
-        Self {
-            request_headers: vec![],
-            query_params: vec![],
-            response: ResponseOnlyConfig::default(),
-        }
-    }
-}
 
 impl FullConfig {
     /// Create a builder for ergonomic construction of [`FullConfig`].

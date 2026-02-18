@@ -128,7 +128,7 @@ pub struct CertifiedAsset {
 impl CertifiedAsset {
     /// Returns true if this asset was dynamically generated.
     ///
-    /// A dynamic asset is one that was certified via `certify_dynamic_response`
+    /// A dynamic asset is one that was certified via `certify_dynamic_response_with_ttl`
     /// (i.e., from `http_request_update`), as opposed to a static asset
     /// certified during `init`/`post_upgrade`.
     pub fn is_dynamic(&self) -> bool {

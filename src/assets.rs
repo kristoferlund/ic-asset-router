@@ -53,7 +53,7 @@ pub fn certify_assets_with_mode(asset_dir: &Dir<'static>, mode: CertificationMod
 
     // Set certified data AFTER all tree modifications
     ASSET_ROUTER.with_borrow(|asset_router| {
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
     });
 }
 
@@ -172,7 +172,7 @@ pub fn delete_assets(asset_paths: Vec<&str>) {
         for path in asset_paths {
             asset_router.delete_asset(path);
         }
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
     });
 }
 
@@ -200,7 +200,7 @@ pub fn invalidate_path(path: &str) {
             .unwrap_or(false);
         if is_dynamic {
             asset_router.delete_asset(path);
-            certified_data_set(&asset_router.root_hash());
+            certified_data_set(asset_router.root_hash());
         }
     });
 }
@@ -227,7 +227,7 @@ pub fn invalidate_prefix(prefix: &str) {
         for p in &to_remove {
             asset_router.delete_asset(p);
         }
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
     });
 }
 
@@ -252,7 +252,7 @@ pub fn invalidate_all_dynamic() {
         for p in &all {
             asset_router.delete_asset(p);
         }
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
     });
 }
 

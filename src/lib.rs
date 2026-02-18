@@ -586,7 +586,7 @@ fn register_skip_routes(root_route_node: &router::RouteNode) {
 
     // Update the root hash to include the new skip entries.
     ASSET_ROUTER.with_borrow(|asset_router| {
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
     });
 
     debug_log!("registered {} skip certification entries", skip_paths.len());
@@ -893,37 +893,20 @@ fn serve_from_cache_or_upgrade(req: &HttpRequest, path: &str) -> HttpResponse<'s
     }
 }
 
-/// Serve a skip-mode route (the `CertificationMode::Skip` branch).
-///
-/// Runs the handler through the middleware chain, then attaches the
-/// skip-certification proof that was pre-registered at init time.
-fn serve_skip_mode(
-    root: &RouteNode,
-    path: &str,
-    handler: router::HandlerFn,
-    req: HttpRequest,
-    params: router::RouteParams,
-) -> HttpResponse<'static> {
-    debug_log!("skip mode: running handler inline for {}", path);
-    let mut response = root.execute_with_middleware(path, handler, req, params);
-    match attach_skip_certification(path, &mut response) {
-        Ok(()) => response,
-        Err(err_resp) => err_resp,
-    }
-}
-
-/// Serve a response without certification (the `certify == false` branch).
-///
-/// Runs the handler through the middleware chain, then attaches a
+/// Run the handler through the middleware chain and attach a
 /// skip-certification proof to the response.
-fn serve_uncertified(
+///
+/// Used both when the caller opts out of certification globally
+/// (`opts.certify == false`) and when a route is configured with
+/// [`CertificationMode::Skip`].
+fn serve_without_certification(
     root: &RouteNode,
     path: &str,
     handler: router::HandlerFn,
     req: HttpRequest,
     params: router::RouteParams,
 ) -> HttpResponse<'static> {
-    debug_log!("Serving {} without certification", path);
+    debug_log!("serving {} without certification", path);
     let mut response = root.execute_with_middleware(path, handler, req, params);
     match attach_skip_certification(path, &mut response) {
         Ok(()) => response,
@@ -969,7 +952,7 @@ pub fn http_request(
 
     match root_route_node.resolve(&path, &method) {
         RouteResult::Found(handler, params, _result_handler, pattern) => match opts.certify {
-            false => serve_uncertified(root_route_node, &path, handler, req, params),
+            false => serve_without_certification(root_route_node, &path, handler, req, params),
             true => {
                 let route_config = root_route_node.get_route_config(&pattern);
                 let cert_mode = route_config.map(|rc| &rc.certification);
@@ -981,7 +964,13 @@ pub fn http_request(
                 }
 
                 if matches!(cert_mode, Some(certification::CertificationMode::Skip)) {
-                    return serve_skip_mode(root_route_node, &path, handler, req, params);
+                    return serve_without_certification(
+                        root_route_node,
+                        &path,
+                        handler,
+                        req,
+                        params,
+                    );
                 }
 
                 serve_from_cache_or_upgrade(&req, &path)
@@ -998,21 +987,14 @@ pub fn http_request(
 /// The response body is stored in the `AssetRouter` via `certify_asset()`,
 /// which lets the query path use `serve_asset()`. All responses — including
 /// not-found handler output — go through this single path. The not-found
+/// Certify a dynamically generated response and store it for future query-path
+/// serving.
+///
+/// The response body is stored in the `AssetRouter` via `certify_asset()`,
+/// which lets the query path use `serve_asset()`. All responses — including
+/// not-found handler output — go through this single path. The not-found
 /// handler's response is certified at the canonical `/__not_found` path so
 /// that only one cache entry exists for all 404s.
-#[allow(dead_code)]
-fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
-    certify_dynamic_response_inner(
-        response,
-        path,
-        None,
-        certification::CertificationMode::response_only(),
-        None,
-    )
-}
-
-/// Certify a dynamic response with per-route certification mode and optional
-/// fallback configuration.
 ///
 /// When `fallback_for` is `Some`, the asset is registered as a fallback
 /// for the given scope. This is used by the not-found handler to certify
@@ -1023,17 +1005,6 @@ fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> Http
 /// - `Full` — uses `certify_dynamic_asset()` with the original request.
 ///
 /// The `request` parameter is required for `Full` mode and ignored otherwise.
-fn certify_dynamic_response_inner(
-    response: HttpResponse<'static>,
-    path: &str,
-    fallback_for: Option<String>,
-    mode: certification::CertificationMode,
-    request: Option<&HttpRequest>,
-) -> HttpResponse<'static> {
-    certify_dynamic_response_with_ttl(response, path, fallback_for, mode, request, None)
-}
-
-/// Core certification function with all parameters including optional TTL override.
 fn certify_dynamic_response_with_ttl(
     response: HttpResponse<'static>,
     path: &str,
@@ -1108,7 +1079,7 @@ fn certify_dynamic_response_with_ttl(
             }
         }
 
-        certified_data_set(&asset_router.root_hash());
+        certified_data_set(asset_router.root_hash());
         true
     });
 
@@ -1165,11 +1136,12 @@ fn handle_not_found_update(
         )
         .build()
     };
-    certify_dynamic_response_inner(
+    certify_dynamic_response_with_ttl(
         response,
         NOT_FOUND_CANONICAL_PATH,
         Some("/".to_string()),
         certification::CertificationMode::response_only(),
+        None,
         None,
     )
 }
