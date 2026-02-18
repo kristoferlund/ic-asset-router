@@ -25,7 +25,7 @@ fn setup() {
         },
         ..ic_asset_router::AssetConfig::default()
     });
-    ic_asset_router::assets::certify_all_assets(&ASSET_DIR);
+    ic_asset_router::certify_assets(&ASSET_DIR);
 }
 
 #[init]

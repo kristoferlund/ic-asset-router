@@ -555,12 +555,14 @@ fn certify_dynamic_response_with_ttl(
     let config = asset_router::AssetCertificationConfig {
         mode: mode.clone(),
         content_type: Some(content_type),
+        status_code: response.status_code(),
         headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
         encodings: vec![],
         fallback_for,
         aliases: vec![],
         certified_at: ic_cdk::api::time(),
         ttl: effective_ttl,
+        dynamic: true,
     };
 
     ASSET_ROUTER.with_borrow_mut(|asset_router| {

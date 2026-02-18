@@ -2,15 +2,13 @@ use ic_asset_router::RouteContext;
 use ic_http_certification::{HttpResponse, StatusCode};
 use std::borrow::Cow;
 
-/// GET /ttl_test → returns the current IC time as a string.
-/// Used by E2E tests to verify TTL-based cache expiry: a fresh response
-/// will have a different timestamp than a cached one.
+/// GET /skip_test → returns "skip ok" with skip certification mode.
+/// The response should NOT have an ic-certificate header.
+#[ic_asset_router::route(certification = "skip")]
 pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
-    let now = ic_cdk::api::time();
-    let body = format!("{now}");
     HttpResponse::builder()
         .with_status_code(StatusCode::OK)
         .with_headers(vec![("content-type".to_string(), "text/plain".to_string())])
-        .with_body(Cow::<[u8]>::Owned(body.into_bytes()))
+        .with_body(Cow::<[u8]>::Owned(b"skip ok".to_vec()))
         .build()
 }

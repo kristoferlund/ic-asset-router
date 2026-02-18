@@ -63,6 +63,9 @@ pub struct CertifiedAsset {
     /// MIME type (e.g., "text/html").
     pub content_type: String,
 
+    /// HTTP status code for the response (e.g., 200, 404).
+    pub status_code: StatusCode,
+
     /// Additional headers to include in response.
     pub headers: Vec<HeaderField>,
 
@@ -89,12 +92,24 @@ pub struct CertifiedAsset {
     /// `None` means the asset never expires (static assets).
     /// `Some(duration)` enables TTL-based invalidation (dynamic assets).
     pub ttl: Option<Duration>,
+
+    /// Whether this asset was dynamically generated (via `http_request_update`).
+    ///
+    /// Dynamic assets may or may not have a TTL. Without TTL they persist
+    /// until explicitly invalidated; with TTL they expire automatically.
+    /// This flag is separate from `ttl` to support the unified router's
+    /// need to track all dynamically-generated assets regardless of TTL.
+    pub dynamic: bool,
 }
 
 impl CertifiedAsset {
-    /// Returns true if this asset has a TTL (i.e., is a dynamic asset).
+    /// Returns true if this asset was dynamically generated.
+    ///
+    /// A dynamic asset is one that was certified via `certify_dynamic_response`
+    /// (i.e., from `http_request_update`), as opposed to a static asset
+    /// certified during `init`/`post_upgrade`.
     pub fn is_dynamic(&self) -> bool {
-        self.ttl.is_some()
+        self.dynamic
     }
 
     /// Check if the asset has expired based on current time (nanoseconds).
@@ -117,6 +132,9 @@ pub struct AssetCertificationConfig {
     /// MIME type. Auto-detected from path if not provided.
     pub content_type: Option<String>,
 
+    /// HTTP status code for the response. Defaults to 200 OK.
+    pub status_code: StatusCode,
+
     /// Additional headers.
     pub headers: Vec<HeaderField>,
 
@@ -137,6 +155,9 @@ pub struct AssetCertificationConfig {
     /// `None` means the asset never expires (static assets).
     /// `Some(duration)` enables TTL-based invalidation (dynamic assets).
     pub ttl: Option<Duration>,
+
+    /// Whether this asset was dynamically generated.
+    pub dynamic: bool,
 }
 
 impl Default for AssetCertificationConfig {
@@ -144,12 +165,14 @@ impl Default for AssetCertificationConfig {
         Self {
             mode: CertificationMode::response_only(),
             content_type: None,
+            status_code: StatusCode::OK,
             headers: vec![],
             encodings: vec![],
             fallback_for: None,
             aliases: vec![],
             certified_at: 0,
             ttl: None,
+            dynamic: false,
         }
     }
 }
@@ -250,7 +273,7 @@ impl AssetRouter {
         self.assets.get_mut(&canonical)
     }
 
-    /// Return all canonical paths of dynamic assets (those with `ttl.is_some()`).
+    /// Return all canonical paths of dynamic assets.
     pub fn dynamic_paths(&self) -> Vec<String> {
         self.assets
             .iter()
@@ -411,7 +434,7 @@ impl AssetRouter {
         }
 
         let response = HttpResponse::builder()
-            .with_status_code(StatusCode::OK)
+            .with_status_code(config.status_code)
             .with_headers(all_headers)
             .with_body(content.as_slice())
             .build();
@@ -422,7 +445,15 @@ impl AssetRouter {
         // Create tree entry and insert. We pass an owned String so the
         // `HttpCertificationPath` stores a `Cow::Owned`, making the
         // resulting `HttpCertificationTreeEntry` have `'static` lifetime.
-        let tree_path = HttpCertificationPath::exact(path.to_string());
+        //
+        // For fallback assets, use a wildcard path so the certification is
+        // valid for any request URL under the scope. For exact assets, use
+        // the exact path.
+        let tree_path = if let Some(ref scope) = config.fallback_for {
+            HttpCertificationPath::wildcard(scope.to_string())
+        } else {
+            HttpCertificationPath::exact(path.to_string())
+        };
         let tree_entry = HttpCertificationTreeEntry::new(tree_path, certification);
         self.tree.borrow_mut().insert(&tree_entry);
 
@@ -438,6 +469,7 @@ impl AssetRouter {
             content,
             encodings,
             content_type,
+            status_code: config.status_code,
             headers: config.headers,
             certification_mode: config.mode,
             cel_expression: cel_str,
@@ -446,6 +478,7 @@ impl AssetRouter {
             aliases: config.aliases.clone(),
             certified_at: config.certified_at,
             ttl: config.ttl,
+            dynamic: config.dynamic,
         };
 
         self.assets.insert(path.to_string(), asset);
@@ -494,7 +527,13 @@ impl AssetRouter {
 
         let certification =
             create_certification_with_request(&config.mode, request, &cert_response)?;
-        let tree_path = HttpCertificationPath::exact(path.to_string());
+        // For fallback assets, use a wildcard path so the certification is
+        // valid for any request URL under the scope.
+        let tree_path = if let Some(ref scope) = config.fallback_for {
+            HttpCertificationPath::wildcard(scope.to_string())
+        } else {
+            HttpCertificationPath::exact(path.to_string())
+        };
         let tree_entry = HttpCertificationTreeEntry::new(tree_path, certification);
         self.tree.borrow_mut().insert(&tree_entry);
 
@@ -506,6 +545,7 @@ impl AssetRouter {
             content: response.body().to_vec(),
             encodings: HashMap::from([(AssetEncoding::Identity, response.body().to_vec())]),
             content_type,
+            status_code: config.status_code,
             headers: config.headers,
             certification_mode: config.mode,
             cel_expression: cel_str,
@@ -514,6 +554,7 @@ impl AssetRouter {
             aliases: config.aliases.clone(),
             certified_at: config.certified_at,
             ttl: config.ttl,
+            dynamic: config.dynamic,
         };
 
         self.assets.insert(path.to_string(), asset);
@@ -608,26 +649,20 @@ impl AssetRouter {
         }
 
         let response = HttpResponse::builder()
-            .with_status_code(StatusCode::OK)
+            .with_status_code(asset.status_code)
             .with_headers(headers)
             .with_body(Cow::<[u8]>::Owned(content.clone()))
             .build();
 
-        // 3. Handle certification based on mode.
-        match &asset.certification_mode {
-            CertificationMode::Skip => {
-                // No certification needed — return empty witness and expr_path.
-                let empty_witness = ic_certification::empty();
-                let empty_path = vec![];
-                Some((response, empty_witness, empty_path))
-            }
-            _ => {
-                let tree = self.tree.borrow();
-                let witness = tree.witness(&asset.tree_entry, request_path).ok()?;
-                let expr_path = asset.tree_entry.path.to_expr_path();
-                Some((response, witness, expr_path))
-            }
-        }
+        // 3. Generate witness and expression path from the certification tree.
+        // All modes (including Skip) need a valid witness so the boundary
+        // node can verify the certification proof. Skip mode's proof tells
+        // the boundary node that the canister intentionally chose not to
+        // certify this path.
+        let tree = self.tree.borrow();
+        let witness = tree.witness(&asset.tree_entry, request_path).ok()?;
+        let expr_path = asset.tree_entry.path.to_expr_path();
+        Some((response, witness, expr_path))
     }
 
     fn select_encoding(&self, request: &HttpRequest, asset: &CertifiedAsset) -> AssetEncoding {
@@ -1026,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_asset_skip_has_empty_witness_and_expr_path() {
+    fn serve_asset_skip_has_valid_witness_and_expr_path() {
         let mut router = make_router();
         router
             .certify_asset("/health", b"ok".to_vec(), skip_config())
@@ -1037,8 +1072,9 @@ mod tests {
         assert!(result.is_some());
         let (response, _witness, expr_path) = result.unwrap();
         assert_eq!(response.body(), b"ok");
-        // Skip mode: expr_path should be empty.
-        assert!(expr_path.is_empty());
+        // Skip mode still has a valid witness and expr_path so the
+        // boundary node can verify the skip proof.
+        assert!(!expr_path.is_empty());
     }
 
     #[test]
@@ -1308,10 +1344,11 @@ mod tests {
     // ==================================================================
 
     #[test]
-    fn is_dynamic_true_when_ttl_some() {
+    fn is_dynamic_true_when_marked_dynamic() {
         let mut router = make_router();
         let config = AssetCertificationConfig {
             ttl: Some(Duration::from_secs(3600)),
+            dynamic: true,
             ..Default::default()
         };
         router
@@ -1321,12 +1358,27 @@ mod tests {
     }
 
     #[test]
-    fn is_dynamic_false_when_ttl_none() {
+    fn is_dynamic_false_when_not_marked_dynamic() {
         let mut router = make_router();
         router
             .certify_asset("/page", b"content".to_vec(), default_config())
             .unwrap();
         assert!(!router.get_asset("/page").unwrap().is_dynamic());
+    }
+
+    #[test]
+    fn is_dynamic_true_without_ttl() {
+        let mut router = make_router();
+        let config = AssetCertificationConfig {
+            ttl: None,
+            dynamic: true,
+            ..Default::default()
+        };
+        router
+            .certify_asset("/page", b"content".to_vec(), config)
+            .unwrap();
+        // Dynamic flag is independent of TTL.
+        assert!(router.get_asset("/page").unwrap().is_dynamic());
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use ic_http_certification::{HttpRequest, HttpResponse};
 use ic_asset_router::router::RouteParams;
+use ic_http_certification::{HttpRequest, HttpResponse};
 
 /// Adds X-Test-Middleware header to all responses.
 pub fn middleware(

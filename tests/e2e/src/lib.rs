@@ -470,4 +470,335 @@ mod tests {
             "100 different 404 paths should create exactly 1 DYNAMIC_CACHE entry (at /__not_found), got: {count}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Helper: send GET with custom request headers
+    // -----------------------------------------------------------------------
+
+    /// Send a GET request with additional headers.
+    fn get_with_headers(
+        client: &Client,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::blocking::Response {
+        let mut builder = client.get(url);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        builder.send().unwrap()
+    }
+
+    /// Check whether a response carries the `ic-certificate` header.
+    fn has_certificate_header(resp: &reqwest::blocking::Response) -> bool {
+        resp.headers().get("ic-certificate").is_some()
+    }
+
+    /// Check whether a response carries the `ic-certificateexpression` header.
+    fn has_certificate_expression_header(resp: &reqwest::blocking::Response) -> bool {
+        resp.headers().get("ic-certificateexpression").is_some()
+    }
+
+    // -----------------------------------------------------------------------
+    // 7.6 — Integration Tests for Certification Modes
+    // -----------------------------------------------------------------------
+
+    // --- 7.6.4: Skip, ResponseOnly, Full (authenticated) mode tests ---
+
+    #[test]
+    fn test_skip_certification_has_skip_proof() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // First request triggers query→update flow for /skip_test.
+        let resp1 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp1.status().as_u16(), 200);
+        let body1 = resp1.text().unwrap();
+        assert_eq!(body1, "skip ok", "skip_test should return 'skip ok'");
+
+        // Second request: served from certified cache (Skip mode).
+        // Skip-mode responses HAVE an ic-certificate header containing a
+        // proof that this path intentionally skips certification. The
+        // boundary node verifies the skip proof and passes the response
+        // through without content verification.
+        let resp2 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&resp2),
+            "Skip mode response should have ic-certificate header with skip proof"
+        );
+        let body2 = resp2.text().unwrap();
+        assert_eq!(body2, "skip ok");
+    }
+
+    #[test]
+    fn test_response_only_certification_has_certificate() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // Static assets use ResponseOnly by default. /style.css is a static
+        // asset certified during init.
+        let resp = client.get(url_for(&base_url, "/style.css")).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&resp),
+            "ResponseOnly mode response should have ic-certificate header"
+        );
+    }
+
+    #[test]
+    fn test_response_only_dynamic_route_has_certificate() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // Dynamic route GET / uses the default ResponseOnly certification.
+        // First request triggers update to generate + certify.
+        let resp1 = client.get(url_for(&base_url, "/")).send().unwrap();
+        assert_eq!(resp1.status().as_u16(), 200);
+
+        // Second request: served from cache with certification.
+        let resp2 = client.get(url_for(&base_url, "/")).send().unwrap();
+        assert_eq!(resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&resp2),
+            "Cached ResponseOnly dynamic route should have ic-certificate header"
+        );
+    }
+
+    #[test]
+    fn test_authenticated_certification_has_certificate() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // First request to /auth_test triggers update.
+        // Send with Authorization header since the route uses Full certification.
+        let resp1 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer token123")],
+        );
+        assert_eq!(resp1.status().as_u16(), 200);
+        let body1 = resp1.text().unwrap();
+        assert!(
+            body1.contains("Bearer token123"),
+            "auth_test should echo the authorization header, got: {body1}"
+        );
+
+        // Second request with same auth: served from certified cache.
+        let resp2 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer token123")],
+        );
+        assert_eq!(resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&resp2),
+            "Authenticated (Full) mode response should have ic-certificate header"
+        );
+    }
+
+    // --- 7.6.5: Mixed modes, dynamic skip, invalidation ---
+
+    #[test]
+    fn test_mixed_certification_modes_in_single_canister() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // Static asset (ResponseOnly) — should have certificate.
+        let static_resp = client.get(url_for(&base_url, "/style.css")).send().unwrap();
+        assert_eq!(static_resp.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&static_resp),
+            "Static asset (ResponseOnly) should have ic-certificate"
+        );
+
+        // Skip route — first trigger update, then check cached.
+        // Skip mode has ic-certificate with a skip proof (the boundary node
+        // verifies that the canister intentionally skipped certification).
+        let skip_resp1 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(skip_resp1.status().as_u16(), 200);
+
+        let skip_resp2 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(skip_resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&skip_resp2),
+            "Skip route should have ic-certificate with skip proof in mixed-mode canister"
+        );
+
+        // Auth route — trigger update then check cached.
+        let auth_resp1 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer mixed")],
+        );
+        assert_eq!(auth_resp1.status().as_u16(), 200);
+
+        let auth_resp2 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer mixed")],
+        );
+        assert_eq!(auth_resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&auth_resp2),
+            "Authenticated route should have ic-certificate in mixed-mode canister"
+        );
+
+        // Default dynamic route (ResponseOnly) — trigger update then check cached.
+        let dyn_resp1 = client.get(url_for(&base_url, "/json")).send().unwrap();
+        assert_eq!(dyn_resp1.status().as_u16(), 200);
+
+        let dyn_resp2 = client.get(url_for(&base_url, "/json")).send().unwrap();
+        assert_eq!(dyn_resp2.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&dyn_resp2),
+            "Default dynamic route (ResponseOnly) should have ic-certificate"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_skip_route_serves_cached() {
+        let (_pic, client, base_url, _cid) = setup();
+
+        // First request triggers update, response is cached.
+        let resp1 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp1.status().as_u16(), 200);
+        let body1 = resp1.text().unwrap();
+
+        // Second request: served from cache.
+        let resp2 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp2.status().as_u16(), 200);
+        let body2 = resp2.text().unwrap();
+        assert_eq!(body1, body2, "cached Skip response should match first");
+
+        // Skip mode responses carry an ic-certificate header with a skip
+        // proof so the boundary node knows the canister intentionally skipped
+        // content certification for this path.
+        let resp3 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert!(
+            has_certificate_header(&resp3),
+            "Cached Skip route should have ic-certificate with skip proof"
+        );
+    }
+
+    #[test]
+    fn test_invalidation_does_not_affect_static_assets() {
+        let (pic, client, base_url, canister_id) = setup();
+
+        // Prime a dynamic route.
+        let resp1 = client.get(url_for(&base_url, "/")).send().unwrap();
+        assert_eq!(resp1.status().as_u16(), 200);
+
+        // Invalidate the dynamic route.
+        let invalidate_arg = candid::encode_one("/".to_string()).unwrap();
+        pic.update_call(
+            canister_id,
+            Principal::anonymous(),
+            "invalidate",
+            invalidate_arg,
+        )
+        .expect("invalidate call should succeed");
+
+        // Static asset should still be served correctly with certificate.
+        let static_resp = client.get(url_for(&base_url, "/style.css")).send().unwrap();
+        assert_eq!(
+            static_resp.status().as_u16(),
+            200,
+            "Static asset should still return 200 after dynamic invalidation"
+        );
+        assert!(
+            has_certificate_header(&static_resp),
+            "Static asset should still have ic-certificate after dynamic invalidation"
+        );
+    }
+
+    #[test]
+    fn test_invalidation_of_skip_route() {
+        let (pic, client, base_url, canister_id) = setup();
+
+        // Prime the skip route.
+        let resp1 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp1.status().as_u16(), 200);
+        assert_eq!(resp1.text().unwrap(), "skip ok");
+
+        // Invalidate the skip route.
+        let invalidate_arg = candid::encode_one("/skip_test".to_string()).unwrap();
+        pic.update_call(
+            canister_id,
+            Principal::anonymous(),
+            "invalidate",
+            invalidate_arg,
+        )
+        .expect("invalidate call should succeed");
+
+        // Next request triggers a fresh update.
+        let resp2 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+        assert_eq!(resp2.status().as_u16(), 200);
+        let body2 = resp2.text().unwrap();
+        assert_eq!(
+            body2, "skip ok",
+            "skip route should still return 'skip ok' after invalidation"
+        );
+    }
+
+    #[test]
+    fn test_invalidation_of_authenticated_route() {
+        let (pic, client, base_url, canister_id) = setup();
+
+        // Prime the auth route.
+        let resp1 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer alice")],
+        );
+        assert_eq!(resp1.status().as_u16(), 200);
+
+        // Invalidate.
+        let invalidate_arg = candid::encode_one("/auth_test".to_string()).unwrap();
+        pic.update_call(
+            canister_id,
+            Principal::anonymous(),
+            "invalidate",
+            invalidate_arg,
+        )
+        .expect("invalidate call should succeed");
+
+        // Next request with different auth should produce different response.
+        let resp2 = get_with_headers(
+            &client,
+            &url_for(&base_url, "/auth_test"),
+            &[("Authorization", "Bearer bob")],
+        );
+        assert_eq!(resp2.status().as_u16(), 200);
+        let body2 = resp2.text().unwrap();
+        assert!(
+            body2.contains("Bearer bob"),
+            "After invalidation, auth route should reflect new auth token, got: {body2}"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_all_dynamic_preserves_static() {
+        let (pic, client, base_url, canister_id) = setup();
+
+        // Prime dynamic routes.
+        let _ = client.get(url_for(&base_url, "/")).send().unwrap();
+        let _ = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
+
+        // Invalidate all dynamic.
+        pic.update_call(
+            canister_id,
+            Principal::anonymous(),
+            "invalidate_all",
+            candid::encode_args(()).unwrap(),
+        )
+        .expect("invalidate_all should succeed");
+
+        // Static asset should still work.
+        let static_resp = client.get(url_for(&base_url, "/style.css")).send().unwrap();
+        assert_eq!(static_resp.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&static_resp),
+            "Static asset should have ic-certificate after invalidate_all"
+        );
+
+        // Dynamic routes should regenerate on next request.
+        let resp = client.get(url_for(&base_url, "/")).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.text().unwrap(), "hello");
+    }
 }

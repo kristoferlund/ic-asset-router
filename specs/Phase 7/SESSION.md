@@ -37,3 +37,41 @@ All 10 tasks (7.4.1–7.4.10) implemented successfully.
 - The `#[route]` macro generates `__route_config()` functions but the build script detection is heuristic (regex-based source scanning). A more robust approach would use `syn` to parse the source files, but this would add build-time dependencies.
 - Integration testing of the full macro → build script → router pipeline (end-to-end with actual `#[route]` attributes on handler functions compiled by the build script) is deferred to spec 7.6.
 - The `PROMPT.md` file in the repo root appears to be a leftover and is untracked — should be cleaned up.
+
+---
+
+## Session 5: Spec 7.6 — Integration Tests (E2E Verification)
+
+**Date:** 2026-02-18
+
+### Tasks completed
+
+Task 7.6.8 — the final task in spec group 7.6. All prior tasks (7.6.1–7.6.7) were completed in Session 4. This session fixed 6 failing e2e tests and verified all pass.
+
+#### Fixes applied to pass e2e tests (26/26)
+
+1. **Skip-mode certification (`asset_router.rs`)**: Skip-mode responses now generate a real witness from the certification tree instead of returning `ic_certification::empty()`. The IC boundary node requires an `ic-certificate` header with a valid skip proof even for skip-certified responses.
+
+2. **Fallback/404 certification paths (`asset_router.rs`)**: Fallback assets (e.g., `/__not_found` 404 handler) now use `HttpCertificationPath::wildcard(scope)` instead of `HttpCertificationPath::exact(path)`. Exact paths only validate for that specific URL, but fallbacks serve any URL under the scope.
+
+3. **Response status code preservation (`asset_router.rs`, `lib.rs`)**: Added a `status_code` field to `CertifiedAsset` and `AssetCertificationConfig` so 404 fallback responses preserve their original status code instead of being hardcoded to 200 OK in `serve_matched_asset()`.
+
+4. **Dynamic asset tracking (`asset_router.rs`, `lib.rs`, `assets.rs`)**: Added an explicit `dynamic: bool` field to `CertifiedAsset` and `AssetCertificationConfig`. Previously `is_dynamic()` relied on `ttl.is_some()`, which missed dynamically-generated assets without TTL (like 404 responses). The flag is set to `true` by `certify_dynamic_response_with_ttl()`.
+
+5. **E2e test expectations (`tests/e2e/src/lib.rs`)**: Updated 3 Skip-mode test assertions to expect an `ic-certificate` header (with skip proof) instead of asserting no header.
+
+#### Verification
+
+- `cargo check` — pass
+- `cargo test` — 262 unit tests pass, 7 doc tests pass
+- `cargo doc --no-deps` — builds without warnings
+
+### Obstacles encountered
+
+- **Skip-mode witness generation**: The initial assumption was that Skip responses don't need an `ic-certificate` header, but the IC boundary node requires it for all certified responses. Had to trace through how the certification tree generates witnesses for skip CEL expressions.
+- **Fallback wildcard vs exact paths**: The distinction between `HttpCertificationPath::exact()` and `HttpCertificationPath::wildcard()` was subtle — fallbacks must use wildcard to match arbitrary URLs under their scope, otherwise certificate verification fails for any URL that isn't the exact fallback path.
+- **Dynamic asset detection**: The `ttl.is_some()` heuristic for `is_dynamic()` broke for dynamically-generated 404 responses that don't have a TTL. Introducing an explicit `dynamic` flag resolved this cleanly and also fixed the auth route invalidation tests.
+
+### Out-of-scope observations
+
+- All spec 7.6 tasks are now complete. The remaining incomplete spec group is 7.5 (Documentation and Examples).

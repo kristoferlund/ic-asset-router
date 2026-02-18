@@ -325,6 +325,7 @@ pub fn register_dynamic_path(path: &str) {
             mode: CertificationMode::skip(),
             certified_at: 0,
             ttl: Some(std::time::Duration::from_secs(3600)),
+            dynamic: true,
             ..Default::default()
         };
         // Ignore errors — this is for testing only.
@@ -355,6 +356,7 @@ mod tests {
                 mode: CertificationMode::skip(),
                 certified_at,
                 ttl,
+                dynamic: true,
                 ..Default::default()
             };
             let _ = asset_router.certify_asset(path, vec![], config);

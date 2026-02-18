@@ -1,5 +1,5 @@
-use ic_http_certification::{HttpResponse, StatusCode};
 use ic_asset_router::RouteContext;
+use ic_http_certification::{HttpResponse, StatusCode};
 use std::borrow::Cow;
 
 /// Custom 404 → returns "custom 404: <path>"

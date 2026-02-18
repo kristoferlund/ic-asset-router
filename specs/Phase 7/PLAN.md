@@ -125,13 +125,14 @@ Depends on: 7.1, 7.2
 
 Depends on: 7.1, 7.2, 7.3
 
-- [ ] **7.6.1** Add test dependencies to `Cargo.toml` or `tests/e2e/Cargo.toml`: `pocket-ic`, `ic-certificate-verification` (or equivalent).
-- [ ] **7.6.2** Create test canister fixture in `tests/` (or extend existing `tests/e2e/test_canister/`) that exposes all certification modes: Skip, ResponseOnly, and authenticated (Full) routes.
-- [ ] **7.6.3** Create shared test helpers (`setup_canister`, `query`, `query_with_header`, `update`, `verify_response`).
-- [ ] **7.6.4** Write PocketIC integration tests: Skip mode (no `ic-certificate` header), ResponseOnly (certificate present and verifies), Full/authenticated (valid with correct auth, invalid with different auth), query params (valid with matching, invalid with different).
-- [ ] **7.6.5** Write PocketIC integration tests: mixed modes in single canister, dynamic route with Skip, dynamic route with authenticated Full cycle, invalidation with unified router.
-- [ ] **7.6.6** Add certification tests to CI (`.github/workflows/test.yml` or equivalent).
-- [ ] **7.6.7** Verify: all integration tests pass via `cargo test` or the e2e test script.
+- [x] **7.6.1** Add test dependencies to `Cargo.toml` or `tests/e2e/Cargo.toml`: `pocket-ic`, `ic-certificate-verification` (or equivalent).
+- [x] **7.6.2** Create test canister fixture in `tests/` (or extend existing `tests/e2e/test_canister/`) that exposes all certification modes: Skip, ResponseOnly, and authenticated (Full) routes.
+- [x] **7.6.3** Create shared test helpers (`setup_canister`, `query`, `query_with_header`, `update`, `verify_response`).
+- [x] **7.6.4** Write PocketIC integration tests: Skip mode (no `ic-certificate` header), ResponseOnly (certificate present and verifies), Full/authenticated (valid with correct auth, invalid with different auth), query params (valid with matching, invalid with different).
+- [x] **7.6.5** Write PocketIC integration tests: mixed modes in single canister, dynamic route with Skip, dynamic route with authenticated Full cycle, invalidation with unified router.
+- [x] **7.6.6** Add certification tests to CI (`.github/workflows/test.yml` or equivalent).
+- [x] **7.6.7** Verify: all integration tests pass via `cargo test`
+- [x] **7.6.8** Verify: all e2e tests pass via the test script in tests/e2e.
 
 ---
 
