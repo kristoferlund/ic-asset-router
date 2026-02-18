@@ -75,12 +75,7 @@ Include a ready-to-paste prompt block that future sessions will use. The prompt 
 - Include rules: no skipping tasks, no reordering
 - Include the failure protocol: if verification fails twice, mark task with [!], commit partial work, stop
 - Restrict file modifications to the target codebase, PLAN.md, and SESSION.md only
-- Tell the agent to append a session summary to SESSION.md (in the same directory as PLAN.md) before stopping. The summary must include:
-  - A heading with the session name (e.g., `## Session 3: Spec 5.4 — Reserved Filename Validation`)
-  - Date
-  - What was accomplished (tasks completed, brief description)
-  - Obstacles encountered (compilation errors, test failures, unclear specs, workarounds applied)
-  - Out-of-scope observations: anything noticed during implementation that should be addressed elsewhere in the codebase but was not part of this session's tasks. These may become new specs or tasks in future phases.
+- Tell the agent to APPEND (not overwrite) a session summary to the end of SESSION.md (in the same directory as PLAN.md). Use heading `## Session N: Spec X.Y — <title>` (increment N). Include: what was accomplished, obstacles encountered, out-of-scope observations.
 
 Adapt the verification commands to the project's language/toolchain:
 - Rust: cargo check, cargo test, cargo doc

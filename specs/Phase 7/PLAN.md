@@ -1,6 +1,6 @@
 # Phase 7 — Configurable Certification Modes: Implementation Plan
 
-**Scope:** Specs 7.1 through 7.6
+**Scope:** Specs 7.1 through 7.7
 **Target codebase:** `/Users/kristoferlund/gh/ic-asset-router`
 **Status:** Not started
 
@@ -22,10 +22,12 @@
  │
  ├──▶ 7.5  Documentation and Examples  (depends on 7.1–7.4)
  │
- └──▶ 7.6  Integration Tests  (depends on 7.1–7.3)
+ ├──▶ 7.6  Integration Tests  (depends on 7.1–7.3)
+ │
+ └──▶ 7.7  RouteContext Ergonomic Improvements  (no hard deps, but update examples after 7.5)
 ```
 
-**Execution order:** 7.1 → 7.2 → 7.3 → 7.4 → 7.6 → 7.5
+**Execution order:** 7.1 → 7.2 → 7.3 → 7.4 → 7.6 → 7.5 → 7.7
 
 **Rationale:**
 - 7.1 is pure types with no dependencies — smallest, most isolated change.
@@ -33,7 +35,8 @@
 - 7.3 is a thin refactor of `certify_assets` that wires 7.1 types into the 7.2 router.
 - 7.4 introduces the proc-macro crate and build-script integration, needing the types (7.1) and router (7.2) to exist.
 - 7.6 (tests) comes before 7.5 (docs) because tests validate the implementation and may surface issues; docs should describe the final verified behavior.
-- 7.5 is last — documentation and examples only make sense once everything works.
+- 7.5 is second-to-last — documentation and examples only make sense once everything works.
+- 7.7 is last — it adds convenience methods and migrates examples/tests to use them, so it should run after all other code is in place.
 
 **Note on illustrative code in specs:** The specs contain pseudocode that communicates design intent but does not always match exact upstream API signatures (e.g., `ic-http-certification` CEL builder methods accept `&[&str]` not `Vec<String>`, and `HttpCertification::response_only()` takes a typed CEL expression struct, not a `String`). During implementation, consult the actual `ic-http-certification` 3.0.3 API docs for correct types and signatures. The existing codebase (`src/lib.rs` lines 274–293) has working examples of the certification API.
 
@@ -149,6 +152,24 @@ Depends on: 7.1, 7.2, 7.3, 7.4
 
 ---
 
+### 7.7 — RouteContext Ergonomic Improvements
+
+Depends on: None (but scheduled last to migrate examples from 7.5)
+
+- [ ] **7.7.1** Add `RouteContext::header(&self, name: &str) -> Option<&str>` — case-insensitive lookup, first match wins, zero-copy.
+- [ ] **7.7.2** Add `RouteContext::body_to_str(&self) -> Result<&str, Utf8Error>` — strict UTF-8 check, zero-copy.
+- [ ] **7.7.3** Add `RouteContext::json<T: DeserializeOwned>(&self) -> Result<T, JsonBodyError>` and `JsonBodyError` enum. Add `serde_json = "1.0"` to `[dependencies]`.
+- [ ] **7.7.4** Add `RouteContext::form_data(&self) -> HashMap<String, String>` (untyped, wraps `parse_form_body`) and `RouteContext::form<T: DeserializeOwned>(&self) -> Result<T, FormBodyError>` (typed) with `FormBodyError` enum.
+- [ ] **7.7.5** Export new types from `src/lib.rs` (`JsonBodyError`, `FormBodyError`; the methods are inherent so they export with `RouteContext`).
+- [ ] **7.7.6** Write unit tests in `src/context.rs`: `header` (case-insensitive, missing, first-match-wins), `body_to_str` (valid, invalid, empty), `json` (valid, invalid JSON, invalid UTF-8, empty), `form_data` (basic, empty, url-encoded), `form` (valid, missing field, invalid UTF-8, empty).
+- [ ] **7.7.7** Migrate **all** examples and e2e tests: do a full codebase search for `eq_ignore_ascii_case`, `from_utf8_lossy(&ctx.body)`, `serde_json::from_str` on body, and `parse_form_body(&ctx.body)` in `examples/` and `tests/e2e/`. Replace every hit in `RouteContext`-based code with the new convenience methods. Also migrate all `certify_all_assets` calls to `certify_assets`. Verify zero remaining verbose patterns and zero deprecated API calls.
+- [ ] **7.7.8** Update `ic-http-certification` version in `Cargo.toml` from `"3.0.3"` to `"3.1"` to match the actual resolved version.
+- [ ] **7.7.9** Migrate internal code: replace `eq_ignore_ascii_case` pattern in `src/lib.rs` where `RouteContext` is available.
+- [ ] **7.7.10** Replace string-based source scanning in `src/build.rs` with `syn`-based parsing: add `syn` to `[build-dependencies]`, rewrite `scan_certification_attribute()` and `has_search_params()` to use `syn::parse_file` and AST walking. Update tests.
+- [ ] **7.7.11** Verify: `cargo check`, `cargo test`, `cargo doc --no-deps` all pass.
+
+---
+
 ## Verification Protocol
 
 ### After each spec group
@@ -208,14 +229,7 @@ Then implement the tasks for that ONE spec group, in order. Follow these rules:
    cargo check && cargo test && cargo doc --no-deps
    ```
 7. Git commit all changes with a descriptive message.
-8. Append a session summary to:
-     /Users/kristoferlund/gh/ic-asset-router/specs/Phase 7/SESSION.md
-   Include:
-   - Heading: `## Session N: Spec X.Y — <title>`
-   - Date
-   - Tasks completed and brief description
-   - Obstacles encountered (compilation errors, test failures, unclear specs, workarounds)
-   - Out-of-scope observations (things noticed that should be addressed elsewhere)
+8. APPEND a session summary to the END of SESSION.md (do NOT overwrite — read first, then add after the last line). Use heading `## Session N: Spec X.Y — <title>` (increment N). Include: what was accomplished, obstacles encountered, out-of-scope observations.
 9. STOP. Do not continue to the next spec group.
 
 IMPORTANT: The spec code snippets are illustrative pseudocode. The actual
