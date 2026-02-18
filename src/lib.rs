@@ -1122,34 +1122,63 @@ fn certify_dynamic_response_with_ttl(
         dynamic: true,
     };
 
-    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+    let certified = ASSET_ROUTER.with_borrow_mut(|asset_router| {
         // Delete any existing asset at this path before re-certifying.
         asset_router.delete_asset(path);
 
         match &mode {
             certification::CertificationMode::Full(_) => {
                 // Full mode requires the original request for certification.
-                let req = request.unwrap_or_else(|| {
-                    ic_cdk::trap(
-                        "Full certification mode requires the original request, \
-                         but none was provided",
-                    )
-                });
-                if let Err(err) = asset_router.certify_dynamic_asset(path, req, &response, config) {
-                    ic_cdk::trap(format!("Failed to certify dynamic asset (full): {err}"));
+                let req = match request {
+                    Some(r) => r,
+                    None => {
+                        debug_log!(
+                            "certify_dynamic_response_with_ttl: Full certification mode \
+                             requires the original request, but none was provided for path '{}'. \
+                             Returning uncertified response.",
+                            path
+                        );
+                        return false;
+                    }
+                };
+                if let Err(_err) = asset_router.certify_dynamic_asset(path, req, &response, config)
+                {
+                    debug_log!(
+                        "certify_dynamic_response_with_ttl: failed to certify dynamic asset \
+                         (full) for path '{}': {}. Returning uncertified response.",
+                        path,
+                        _err
+                    );
+                    return false;
                 }
             }
             _ => {
                 // Skip and ResponseOnly modes use certify_asset.
-                if let Err(err) = asset_router.certify_asset(path, response.body().to_vec(), config)
+                if let Err(_err) =
+                    asset_router.certify_asset(path, response.body().to_vec(), config)
                 {
-                    ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
+                    debug_log!(
+                        "certify_dynamic_response_with_ttl: failed to certify dynamic asset \
+                         for path '{}': {}. Returning uncertified response.",
+                        path,
+                        _err
+                    );
+                    return false;
                 }
             }
         }
 
         certified_data_set(&asset_router.root_hash());
+        true
     });
+
+    if !certified {
+        debug_log!(
+            "certify_dynamic_response_with_ttl: certification failed for path '{}', \
+             serving uncertified response",
+            path
+        );
+    }
 
     response
 }

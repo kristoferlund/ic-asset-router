@@ -306,7 +306,9 @@ pub fn url_decode(input: &str) -> std::borrow::Cow<'_, str> {
 
     String::from_utf8(bytes)
         .map(std::borrow::Cow::Owned)
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes().to_vec().leak()))
+        .unwrap_or_else(|e| {
+            std::borrow::Cow::Owned(String::from_utf8_lossy(e.as_bytes()).into_owned())
+        })
 }
 
 /// Deserialize a URL query string into a typed struct using `serde_urlencoded`.
@@ -558,6 +560,19 @@ mod tests {
         assert_eq!(result, "plain");
         // Should be zero-copy (borrowed)
         assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+    }
+
+    // --- 8.2.4: url_decode with invalid UTF-8 byte sequences ---
+
+    #[test]
+    fn url_decode_invalid_utf8_returns_valid_string() {
+        // %FF%FE are not valid UTF-8 bytes. url_decode should produce a
+        // valid string (via lossy conversion) without panicking or leaking.
+        let result = url_decode("%FF%FE");
+        // The result should be a valid Rust string (no panic).
+        assert!(!result.is_empty());
+        // String::from_utf8_lossy replaces invalid sequences with U+FFFD.
+        assert!(result.contains('\u{FFFD}'));
     }
 
     // --- 6.8: parse_form_body tests ---

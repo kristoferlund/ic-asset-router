@@ -44,11 +44,11 @@
 
 ### 8.2 — Eliminate Production Panics
 
-- [ ] **8.2.1** Replace `ic_cdk::trap` calls in `certify_dynamic_response_with_ttl` (`src/lib.rs`) with `debug_log!` + return the uncertified response. Three call sites: missing request for Full mode, `certify_dynamic_asset` error, `certify_asset` error.
-- [ ] **8.2.2** Fix `url_decode` memory leak in `src/context.rs:309`: replace `.leak()` with `.into_owned()` so `String::from_utf8_lossy` returns an owned `Cow` without permanent heap allocation.
-- [ ] **8.2.3** Audit all `.unwrap()`, `.expect()`, and `ic_cdk::trap()` calls in `src/` (excluding `#[cfg(test)]` blocks and `src/build.rs`). Document each as either (a) infallible and safe, or (b) needs fixing. Fix any that can fire in production.
-- [ ] **8.2.4** Add unit test in `src/context.rs`: `url_decode` with invalid UTF-8 byte sequences (e.g., `"%FF%FE"`) returns a valid string without panicking.
-- [ ] **8.2.5** Verify: `cargo check` and `cargo test` pass.
+- [x] **8.2.1** Replace `ic_cdk::trap` calls in `certify_dynamic_response_with_ttl` (`src/lib.rs`) with `debug_log!` + return the uncertified response. Three call sites: missing request for Full mode, `certify_dynamic_asset` error, `certify_asset` error.
+- [x] **8.2.2** Fix `url_decode` memory leak in `src/context.rs:309`: replace `.leak()` with `.into_owned()` so `String::from_utf8_lossy` returns an owned `Cow` without permanent heap allocation.
+- [x] **8.2.3** Audit all `.unwrap()`, `.expect()`, and `ic_cdk::trap()` calls in `src/` (excluding `#[cfg(test)]` blocks and `src/build.rs`). Document each as either (a) infallible and safe, or (b) needs fixing. Fix any that can fire in production.
+- [x] **8.2.4** Add unit test in `src/context.rs`: `url_decode` with invalid UTF-8 byte sequences (e.g., `"%FF%FE"`) returns a valid string without panicking.
+- [x] **8.2.5** Verify: `cargo check` and `cargo test` pass.
 
 ---
 
