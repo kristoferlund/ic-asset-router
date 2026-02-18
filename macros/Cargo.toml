@@ -1,7 +1,12 @@
 [package]
 name = "ic-asset-router-macros"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
+description = "Proc-macro crate for ic-asset-router. Provides the #[route] attribute for per-route certification configuration."
+license = "MIT"
+repository = "https://github.com/kristoferlund/ic-asset-router"
+keywords = ["internet-computer", "icp", "http", "routing"]
+categories = ["web-programming"]
 
 [lib]
 proc-macro = true
