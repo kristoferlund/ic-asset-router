@@ -270,7 +270,7 @@ use assets::get_asset_headers;
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, DefaultCelBuilder, HttpCertification, HttpCertificationPath,
-    HttpCertificationTree, HttpCertificationTreeEntry, Method, CERTIFICATE_EXPRESSION_HEADER_NAME,
+    HttpCertificationTree, HttpCertificationTreeEntry, CERTIFICATE_EXPRESSION_HEADER_NAME,
 };
 use router::{RouteNode, RouteResult};
 
@@ -354,7 +354,7 @@ pub use context::{
     JsonBodyError, QueryParams, RouteContext,
 };
 pub use ic_asset_router_macros::route;
-pub use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
+pub use ic_http_certification::{HttpRequest, HttpResponse, Method, StatusCode};
 pub use route_config::RouteConfig;
 pub use router::{HandlerResult, RouteParams};
 

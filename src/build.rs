@@ -180,16 +180,12 @@ pub fn generate_routes_from(dir: &str) {
     output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use crate::routes;\n");
     output.push_str("#[allow(unused_imports)]\n");
-    output.push_str("use ic_http_certification::Method;\n");
+    output.push_str("use ic_asset_router::Method;\n");
     output.push_str("#[allow(unused_imports)]\n");
     output.push_str("use ic_asset_router::router::{NodeType, RouteNode, RouteParams};\n");
     output.push_str("#[allow(unused_imports)]\n");
     output
-        .push_str("use ic_asset_router::{RouteConfig, RouteContext, parse_query, deserialize_search_params};\n");
-    output.push_str("#[allow(unused_imports)]\n");
-    output.push_str("use ic_http_certification::HttpRequest;\n");
-    output.push_str("#[allow(unused_imports)]\n");
-    output.push_str("use ic_http_certification::HttpResponse;\n");
+        .push_str("use ic_asset_router::{HttpRequest, HttpResponse, RouteConfig, RouteContext, parse_query, deserialize_search_params};\n");
     output.push('\n');
 
     // Generate wrapper functions for each route handler.
