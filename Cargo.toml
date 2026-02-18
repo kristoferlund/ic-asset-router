@@ -6,7 +6,6 @@ edition = "2021"
 [lib]
 
 [dependencies]
-ic-asset-certification = "3.0.3"
 ic-cdk = "0.18.7"
 ic-certification = "3.0.3"
 ic-http-certification = "3.0.3"

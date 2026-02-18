@@ -68,3 +68,45 @@ All 15 tasks (7.2.1–7.2.15) implemented successfully.
 
 - The `DYNAMIC_CACHE` thread-local in `src/lib.rs` and the `ic_asset_certification::AssetRouter` usage will be replaced in spec 7.3 when `certify_assets` is refactored to use the new `AssetRouter`.
 - The `ic-http-certification` crate resolves to 3.1.0 despite Cargo.toml specifying 3.0.3 — API is compatible but the version should be updated in Cargo.toml during 7.3.
+
+---
+
+## Session 3: Spec 7.3 — Refactor certify_assets for Certification Modes
+
+**Date:** 2026-02-18
+
+### Tasks completed
+
+All 6 tasks (7.3.1–7.3.6) implemented successfully across sessions 3a and 3b.
+
+#### Session 3a (7.3.1–7.3.4)
+
+- **7.3.1** Renamed `certify_all_assets` to `certify_assets` in `src/assets.rs`. Kept `certify_all_assets` as a deprecated backward-compatible alias delegating to `certify_assets`.
+- **7.3.2** Implemented `certify_assets_with_mode` with a new `certify_dir_recursive` function that walks `include_dir` directories, builds `AssetCertificationConfig` per file, calls `router.certify_asset()`, auto-generates aliases for `index.html` files (directory root + trailing slash), and collects `.br`/`.gz` sibling files as pre-compressed encoding variants. Files ending in `.br` or `.gz` are skipped as primary assets.
+- **7.3.3** Full migration of `src/lib.rs`:
+  - Replaced `ic_asset_certification::AssetRouter` thread-local with `crate::asset_router::AssetRouter`.
+  - Removed `DYNAMIC_CACHE` thread-local entirely.
+  - Updated all 6 `serve_asset` call sites to use the new API (`Option<(HttpResponse, HashTree, Vec<String>)>`) plus `add_v2_certificate_header`.
+  - Rewrote `certify_dynamic_response_inner` to delete existing assets before re-certifying, using `Option<String>` for fallback scope.
+  - Updated all TTL/cache-state logic in `http_request`/`http_request_update` to query `ASSET_ROUTER` instead of `DYNAMIC_CACHE`.
+  - Rewrote invalidation functions (`invalidate_path`, `invalidate_prefix`, `invalidate_all_dynamic`) and all tests.
+  - Removed `CachedDynamicAsset` type.
+  - Added `dynamic_paths()` and `dynamic_paths_with_prefix()` methods to `AssetRouter` to replace `DYNAMIC_CACHE` lookups.
+- **7.3.4** Updated `src/lib.rs` exports to include `certify_assets` and `certify_assets_with_mode`.
+
+#### Session 3b (7.3.5–7.3.6)
+
+- **7.3.5** Removed `ic-asset-certification` from `Cargo.toml` dependencies. Confirmed no source files import from `ic_asset_certification` (only doc comments reference it).
+- **7.3.6** Full verification: `cargo check` clean, all 240 tests pass, `cargo doc --no-deps` builds without warnings.
+
+### Obstacles encountered
+
+- **`ic_asset_certification` handled encoding internally** via filename-based lookups (`.br`, `.gz` sibling files). The new `certify_dir_recursive` replicates this by detecting sibling files in the `include_dir` directory tree. Files ending in `.br`/`.gz` are skipped as primary assets and instead collected as encoding variants of the base file.
+- **`DYNAMIC_CACHE` removal required new `AssetRouter` methods**: The invalidation functions previously iterated over `DYNAMIC_CACHE` to find dynamic asset paths. Added `dynamic_paths()` and `dynamic_paths_with_prefix()` to `AssetRouter` to expose this information.
+- **`certified_data_set()` unavailable in unit tests**: This IC runtime API cannot be called outside a canister. Tests manipulate `ASSET_ROUTER` directly via `with_borrow_mut` to test invalidation logic without hitting IC APIs.
+- **`collect_assets` public function removed**: It depended on `ic_asset_certification::Asset` type which no longer exists. The function was not used externally (no grep hits outside the crate).
+
+### Out-of-scope observations
+
+- Examples (`react-app`, `htmx-app`) and `tests/e2e/test_canister` still call `certify_all_assets` — they work via the deprecated alias but should be updated in a future session (spec 7.5 — Documentation and Examples).
+- The `ic-http-certification` Cargo.toml version specifies `3.0.3` but resolves to `3.1.0` — consider updating the version string for clarity.

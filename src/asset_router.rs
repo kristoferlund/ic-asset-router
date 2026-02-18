@@ -249,6 +249,24 @@ impl AssetRouter {
             .to_string();
         self.assets.get_mut(&canonical)
     }
+
+    /// Return all canonical paths of dynamic assets (those with `ttl.is_some()`).
+    pub fn dynamic_paths(&self) -> Vec<String> {
+        self.assets
+            .iter()
+            .filter(|(_, asset)| asset.is_dynamic())
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    /// Return all canonical paths of dynamic assets whose path starts with `prefix`.
+    pub fn dynamic_paths_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.assets
+            .iter()
+            .filter(|(path, asset)| asset.is_dynamic() && path.starts_with(prefix))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

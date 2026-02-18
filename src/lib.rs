@@ -93,12 +93,9 @@ macro_rules! debug_log {
     ($($arg:tt)*) => {};
 }
 
-use std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, rc::Rc};
 
-use assets::{get_asset_headers, CachedDynamicAsset};
-use ic_asset_certification::{
-    Asset, AssetConfig as IcAssetConfig, AssetFallbackConfig, AssetRouter,
-};
+use assets::get_asset_headers;
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
     utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
@@ -175,7 +172,10 @@ pub mod mime;
 /// Route trie, handler types, and dispatch logic.
 pub mod router;
 
-pub use assets::{invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at};
+pub use assets::{
+    certify_assets, certify_assets_with_mode, invalidate_all_dynamic, invalidate_path,
+    invalidate_prefix, last_certified_at,
+};
 pub use certification::{CertificationMode, FullConfig, FullConfigBuilder, ResponseOnlyConfig};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
 pub use context::{
@@ -185,12 +185,8 @@ pub use router::HandlerResult;
 
 thread_local! {
     static HTTP_TREE: Rc<RefCell<HttpCertificationTree>> = Default::default();
-    static ASSET_ROUTER: RefCell<AssetRouter<'static>> = RefCell::new(AssetRouter::with_tree(HTTP_TREE.with(|tree| tree.clone())));
+    static ASSET_ROUTER: RefCell<asset_router::AssetRouter> = RefCell::new(asset_router::AssetRouter::with_tree(HTTP_TREE.with(|tree| tree.clone())));
     static ROUTER_CONFIG: RefCell<AssetConfig> = RefCell::new(AssetConfig::default());
-    /// Tracks dynamically generated assets with their certification metadata.
-    /// Maps path → `CachedDynamicAsset` (timestamp + optional TTL).
-    /// Used by the invalidation API and TTL-based cache expiry.
-    static DYNAMIC_CACHE: RefCell<HashMap<String, CachedDynamicAsset>> = RefCell::new(HashMap::new());
 }
 
 /// Set the global router configuration.
@@ -301,39 +297,50 @@ pub fn http_request(
                 })
             }
             true => {
-                // Check DYNAMIC_CACHE to determine cache state for this path.
+                // Check the unified AssetRouter to determine cache state.
                 // Three outcomes:
-                //   Missing  — path was never generated or was invalidated; upgrade.
-                //   Expired  — TTL elapsed; upgrade to regenerate.
+                //   Missing  — no asset at this path; upgrade to generate.
+                //   Expired  — dynamic asset with elapsed TTL; upgrade to regenerate.
                 //   Valid    — serve from asset router.
                 //
-                // We must check DYNAMIC_CACHE *before* calling serve_asset()
-                // because the AssetRouter may have a /__not_found fallback
-                // registered for scope "/". If the exact asset was deleted
-                // (via invalidate_path), serve_asset() would match the
-                // fallback and incorrectly return a 404 instead of upgrading.
+                // We check the asset directly (not via serve_asset) to avoid
+                // matching a fallback when the exact asset was invalidated.
                 enum CacheState {
                     Missing,
                     Expired,
                     Valid,
                 }
 
-                let cache_state = DYNAMIC_CACHE.with(|dc| {
-                    let cache = dc.borrow();
-                    match cache.get(&path) {
-                        Some(entry) => {
-                            let effective_ttl = entry.ttl.or_else(|| {
-                                ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(&path))
-                            });
-                            if let Some(ttl) = effective_ttl {
-                                let now_ns = ic_cdk::api::time();
-                                let expiry_ns =
-                                    entry.certified_at.saturating_add(ttl.as_nanos() as u64);
-                                if now_ns >= expiry_ns {
-                                    return CacheState::Expired;
+                let cache_state = ASSET_ROUTER.with_borrow(|asset_router| {
+                    match asset_router.get_asset(&path) {
+                        Some(asset) => {
+                            if asset.is_dynamic() {
+                                // Check TTL: first asset's own TTL, then global config.
+                                let is_expired = if asset.ttl.is_some() {
+                                    asset.is_expired(ic_cdk::api::time())
+                                } else {
+                                    // Check global config TTL.
+                                    let effective_ttl = ROUTER_CONFIG
+                                        .with(|c| c.borrow().cache_config.effective_ttl(&path));
+                                    if let Some(ttl) = effective_ttl {
+                                        let now_ns = ic_cdk::api::time();
+                                        let expiry_ns = asset
+                                            .certified_at
+                                            .saturating_add(ttl.as_nanos() as u64);
+                                        now_ns >= expiry_ns
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if is_expired {
+                                    CacheState::Expired
+                                } else {
+                                    CacheState::Valid
                                 }
+                            } else {
+                                // Static asset — always valid.
+                                CacheState::Valid
                             }
-                            CacheState::Valid
                         }
                         None => CacheState::Missing,
                     }
@@ -341,7 +348,7 @@ pub fn http_request(
 
                 match cache_state {
                     CacheState::Missing => {
-                        debug_log!("upgrading (not in dynamic cache: {})", path);
+                        debug_log!("upgrading (no asset: {})", path);
                         HttpResponse::builder().with_upgrade(true).build()
                     }
                     CacheState::Expired => {
@@ -356,7 +363,10 @@ pub fn http_request(
                                 return HttpResponse::builder().with_upgrade(true).build();
                             }
                         };
-                        if let Ok(response) = asset_router.serve_asset(&cert, &req) {
+                        if let Some((mut response, witness, expr_path)) =
+                            asset_router.serve_asset(&req)
+                        {
+                            add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
                             debug_log!("serving directly");
                             response
                         } else {
@@ -370,28 +380,38 @@ pub fn http_request(
         RouteResult::MethodNotAllowed(allowed) => method_not_allowed(&allowed),
         RouteResult::NotFound => {
             if opts.certify {
-                // Check DYNAMIC_CACHE for the canonical /__not_found entry.
+                // Check the unified AssetRouter for the canonical /__not_found entry.
                 // All 404 responses are certified under this single path to
                 // prevent memory growth from bot scans.
-                let canonical_state = DYNAMIC_CACHE.with(|dc| {
-                    let cache = dc.borrow();
-                    cache.get(NOT_FOUND_CANONICAL_PATH).map(|entry| {
-                        let effective_ttl = entry.ttl.or_else(|| {
-                            ROUTER_CONFIG.with(|c| {
-                                c.borrow()
-                                    .cache_config
-                                    .effective_ttl(NOT_FOUND_CANONICAL_PATH)
-                            })
-                        });
-                        if let Some(ttl) = effective_ttl {
-                            let now_ns = ic_cdk::api::time();
-                            let expiry_ns =
-                                entry.certified_at.saturating_add(ttl.as_nanos() as u64);
-                            now_ns >= expiry_ns
-                        } else {
-                            false
-                        }
-                    })
+                let canonical_state = ASSET_ROUTER.with_borrow(|asset_router| {
+                    asset_router
+                        .get_asset(NOT_FOUND_CANONICAL_PATH)
+                        .map(|asset| {
+                            if asset.is_dynamic() {
+                                // Check TTL.
+                                let is_expired = if asset.ttl.is_some() {
+                                    asset.is_expired(ic_cdk::api::time())
+                                } else {
+                                    let effective_ttl = ROUTER_CONFIG.with(|c| {
+                                        c.borrow()
+                                            .cache_config
+                                            .effective_ttl(NOT_FOUND_CANONICAL_PATH)
+                                    });
+                                    if let Some(ttl) = effective_ttl {
+                                        let now_ns = ic_cdk::api::time();
+                                        let expiry_ns = asset
+                                            .certified_at
+                                            .saturating_add(ttl.as_nanos() as u64);
+                                        now_ns >= expiry_ns
+                                    } else {
+                                        false
+                                    }
+                                };
+                                is_expired
+                            } else {
+                                false // Static not-found assets don't expire
+                            }
+                        })
                 });
 
                 match canonical_state {
@@ -414,7 +434,15 @@ pub fn http_request(
                                     return HttpResponse::builder().with_upgrade(true).build();
                                 }
                             };
-                            if let Ok(response) = asset_router.serve_asset(&cert, &req) {
+                            if let Some((mut response, witness, expr_path)) =
+                                asset_router.serve_asset(&req)
+                            {
+                                add_v2_certificate_header(
+                                    &cert,
+                                    &mut response,
+                                    &witness,
+                                    &expr_path,
+                                );
                                 debug_log!("serving cached not-found for {}", path);
                                 response
                             } else {
@@ -426,13 +454,16 @@ pub fn http_request(
                         });
                     }
                     None => {
-                        // Not in dynamic cache. Try serving a static asset
+                        // Not in router. Try serving a static asset
                         // for the original path before triggering the update.
-                        let maybe_asset = ASSET_ROUTER.with_borrow(|asset_router| {
+                        let maybe_response = ASSET_ROUTER.with_borrow(|asset_router| {
                             let cert = data_certificate()?;
-                            asset_router.serve_asset(&cert, &req).ok()
+                            let (mut response, witness, expr_path) =
+                                asset_router.serve_asset(&req)?;
+                            add_v2_certificate_header(&cert, &mut response, &witness, &expr_path);
+                            Some(response)
                         });
-                        if let Some(response) = maybe_asset {
+                        if let Some(response) = maybe_response {
                             debug_log!("serving static asset for {}", path);
                             return response;
                         }
@@ -463,55 +494,49 @@ pub fn http_request(
 /// Certify a dynamically generated response and store it for future query-path
 /// serving.
 ///
-/// The response body is stored in the `AssetRouter` via `certify_assets`,
+/// The response body is stored in the `AssetRouter` via `certify_asset()`,
 /// which lets the query path use `serve_asset()`. All responses — including
 /// not-found handler output — go through this single path. The not-found
 /// handler's response is certified at the canonical `/__not_found` path so
 /// that only one cache entry exists for all 404s.
 fn certify_dynamic_response(response: HttpResponse<'static>, path: &str) -> HttpResponse<'static> {
-    certify_dynamic_response_inner(response, path, vec![])
+    certify_dynamic_response_inner(response, path, None)
 }
 
 /// Certify a dynamic response with optional fallback configuration.
 ///
-/// When `fallback_for` is non-empty, the asset is registered as a fallback
-/// for the given scopes. This is used by the not-found handler to certify
+/// When `fallback_for` is `Some`, the asset is registered as a fallback
+/// for the given scope. This is used by the not-found handler to certify
 /// a single `/__not_found` asset that serves as a fallback for all paths.
 fn certify_dynamic_response_inner(
     response: HttpResponse<'static>,
     path: &str,
-    fallback_for: Vec<AssetFallbackConfig>,
+    fallback_for: Option<String>,
 ) -> HttpResponse<'static> {
     let content_type = extract_content_type(&response);
     let effective_ttl = ROUTER_CONFIG.with(|c| c.borrow().cache_config.effective_ttl(path));
 
-    let asset = Asset::new(path.to_string(), response.body().to_vec());
     let dynamic_cache_control =
         ROUTER_CONFIG.with(|c| c.borrow().cache_control.dynamic_assets.clone());
-    let asset_config = IcAssetConfig::File {
-        path: path.to_string(),
+
+    let config = asset_router::AssetCertificationConfig {
+        mode: certification::CertificationMode::response_only(),
         content_type: Some(content_type),
         headers: get_asset_headers(vec![("cache-control".to_string(), dynamic_cache_control)]),
-        fallback_for,
-        aliased_by: vec![],
         encodings: vec![],
+        fallback_for,
+        aliases: vec![],
+        certified_at: ic_cdk::api::time(),
+        ttl: effective_ttl,
     };
 
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        if let Err(err) = asset_router.certify_assets(vec![asset], vec![asset_config]) {
+        // Delete any existing asset at this path before re-certifying.
+        asset_router.delete_asset(path);
+        if let Err(err) = asset_router.certify_asset(path, response.body().to_vec(), config) {
             ic_cdk::trap(format!("Failed to certify dynamic asset: {err}"));
         }
-        certified_data_set(asset_router.root_hash());
-    });
-
-    DYNAMIC_CACHE.with(|dc| {
-        dc.borrow_mut().insert(
-            path.to_string(),
-            CachedDynamicAsset {
-                certified_at: ic_cdk::api::time(),
-                ttl: effective_ttl,
-            },
-        );
+        certified_data_set(&asset_router.root_hash());
     });
 
     response
@@ -551,35 +576,29 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                         // Reset the certified_at timestamp if TTL-based caching
                         // is active. The content was confirmed fresh, so the TTL
                         // timer should restart.
-                        DYNAMIC_CACHE.with(|dc| {
-                            let mut cache = dc.borrow_mut();
-                            if let Some(entry) = cache.get_mut(&path) {
-                                if entry.ttl.is_some() {
-                                    entry.certified_at = ic_cdk::api::time();
+                        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+                            if let Some(asset) = asset_router.get_asset_mut(&path) {
+                                if asset.ttl.is_some() {
+                                    asset.certified_at = ic_cdk::api::time();
                                 }
                             }
                         });
 
                         // Serve the existing cached response from the asset router.
                         return ASSET_ROUTER.with_borrow(|asset_router| {
-                            let cert = match data_certificate() {
-                                Some(c) => c,
-                                None => {
-                                    // In an update call, data_certificate() is unavailable.
-                                    // Return the cached body without certification headers.
+                            match asset_router.serve_asset(&req) {
+                                Some((mut resp, witness, expr_path)) => {
+                                    // In an update call, data_certificate() may be unavailable.
+                                    // Try to add cert header; if not available, return without it.
                                     // The next query call will attach the valid proof.
-                                    return match asset_router.serve_asset(&[], &req) {
-                                        Ok(resp) => resp,
-                                        Err(_) => error_response(
-                                            500,
-                                            "Internal Server Error: NotModified but no cached asset found",
-                                        ),
-                                    };
+                                    if let Some(cert) = data_certificate() {
+                                        add_v2_certificate_header(
+                                            &cert, &mut resp, &witness, &expr_path,
+                                        );
+                                    }
+                                    resp
                                 }
-                            };
-                            match asset_router.serve_asset(&cert, &req) {
-                                Ok(resp) => resp,
-                                Err(_) => error_response(
+                                None => error_response(
                                     500,
                                     "Internal Server Error: NotModified but no cached asset found",
                                 ),
@@ -604,24 +623,30 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
         RouteResult::NotFound => {
             // Check if the canonical 404 entry already has a valid cached
             // response. If so, skip re-execution and serve directly.
-            let cached_valid = DYNAMIC_CACHE.with(|dc| {
-                let cache = dc.borrow();
-                if let Some(entry) = cache.get(NOT_FOUND_CANONICAL_PATH) {
-                    let effective_ttl = entry.ttl.or_else(|| {
-                        ROUTER_CONFIG.with(|c| {
-                            c.borrow()
-                                .cache_config
-                                .effective_ttl(NOT_FOUND_CANONICAL_PATH)
-                        })
-                    });
-                    let expired = if let Some(ttl) = effective_ttl {
-                        let now_ns = ic_cdk::api::time();
-                        let expiry_ns = entry.certified_at.saturating_add(ttl.as_nanos() as u64);
-                        now_ns >= expiry_ns
+            let cached_valid = ASSET_ROUTER.with_borrow(|asset_router| {
+                if let Some(asset) = asset_router.get_asset(NOT_FOUND_CANONICAL_PATH) {
+                    if asset.is_dynamic() {
+                        let is_expired = if asset.ttl.is_some() {
+                            asset.is_expired(ic_cdk::api::time())
+                        } else {
+                            let effective_ttl = ROUTER_CONFIG.with(|c| {
+                                c.borrow()
+                                    .cache_config
+                                    .effective_ttl(NOT_FOUND_CANONICAL_PATH)
+                            });
+                            if let Some(ttl) = effective_ttl {
+                                let now_ns = ic_cdk::api::time();
+                                let expiry_ns =
+                                    asset.certified_at.saturating_add(ttl.as_nanos() as u64);
+                                now_ns >= expiry_ns
+                            } else {
+                                false
+                            }
+                        };
+                        !is_expired
                     } else {
-                        false
-                    };
-                    !expired
+                        true // Static not-found asset is always valid
+                    }
                 } else {
                     false
                 }
@@ -631,10 +656,11 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                 // Already certified and not expired — serve from asset router.
                 debug_log!("not-found canonical entry still valid, serving from cache");
                 return ASSET_ROUTER.with_borrow(|asset_router| {
-                    let canonical_req = HttpRequest::get(NOT_FOUND_CANONICAL_PATH.to_string()).build();
-                    match asset_router.serve_asset(&[], &canonical_req) {
-                        Ok(resp) => resp,
-                        Err(_) => error_response(
+                    let canonical_req =
+                        HttpRequest::get(NOT_FOUND_CANONICAL_PATH.to_string()).build();
+                    match asset_router.serve_asset(&canonical_req) {
+                        Some((resp, _witness, _expr_path)) => resp,
+                        None => error_response(
                             500,
                             "Internal Server Error: cached not-found entry missing from asset router",
                         ),
@@ -657,10 +683,7 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
             certify_dynamic_response_inner(
                 response,
                 NOT_FOUND_CANONICAL_PATH,
-                vec![AssetFallbackConfig {
-                    scope: "/".to_string(),
-                    status_code: Some(StatusCode::NOT_FOUND),
-                }],
+                Some("/".to_string()),
             )
         }
     }

@@ -90,12 +90,12 @@ This is the largest spec. Split into three sub-sections: types, core implementat
 
 Depends on: 7.2
 
-- [ ] **7.3.1** Rename `certify_all_assets` to `certify_assets` in `src/assets.rs`. Implement it as a one-liner that delegates to `certify_assets_with_mode` with `CertificationMode::response_only()`.
-- [ ] **7.3.2** Implement `certify_assets_with_mode` — walks the directory recursively (files + subdirs), builds `AssetCertificationConfig` for each file, calls `router.certify_asset()`, then calls `certified_data_set`.
-- [ ] **7.3.3** Migrate `src/lib.rs` thread-local state: replace `ic_asset_certification::AssetRouter` with the new `crate::asset_router::AssetRouter`. Remove the `DYNAMIC_CACHE` thread-local. Update all call sites (`certify_dynamic_response`, `invalidate_path`, `invalidate_prefix`, `invalidate_all_dynamic`, `http_request`, `http_request_update`) to use the unified router.
-- [ ] **7.3.4** Update `src/lib.rs` exports: export `certify_assets`, `certify_assets_with_mode`, and deprecate or remove `certify_all_assets`.
-- [ ] **7.3.5** Update `Cargo.toml`: remove `ic-asset-certification` from `[dependencies]` (or make it optional).
-- [ ] **7.3.6** Verify: `cargo check` passes, `cargo test` passes (all existing tests still work).
+- [x] **7.3.1** Rename `certify_all_assets` to `certify_assets` in `src/assets.rs`. Implement it as a one-liner that delegates to `certify_assets_with_mode` with `CertificationMode::response_only()`.
+- [x] **7.3.2** Implement `certify_assets_with_mode` — walks the directory recursively (files + subdirs), builds `AssetCertificationConfig` for each file, calls `router.certify_asset()`, then calls `certified_data_set`.
+- [x] **7.3.3** Migrate `src/lib.rs` thread-local state: replace `ic_asset_certification::AssetRouter` with the new `crate::asset_router::AssetRouter`. Remove the `DYNAMIC_CACHE` thread-local. Update all call sites (`certify_dynamic_response`, `invalidate_path`, `invalidate_prefix`, `invalidate_all_dynamic`, `http_request`, `http_request_update`) to use the unified router.
+- [x] **7.3.4** Update `src/lib.rs` exports: export `certify_assets`, `certify_assets_with_mode`, and deprecate or remove `certify_all_assets`.
+- [x] **7.3.5** Update `Cargo.toml`: remove `ic-asset-certification` from `[dependencies]` (or make it optional).
+- [x] **7.3.6** Verify: `cargo check` passes, `cargo test` passes (all existing tests still work).
 
 ---
 

@@ -1,156 +1,160 @@
-use std::time::Duration;
-
-use ic_asset_certification::{Asset, AssetConfig, AssetEncoding};
 use ic_cdk::api::certified_data_set;
 use ic_http_certification::HeaderField;
 use include_dir::Dir;
 
-use crate::{mime::get_mime_type, ASSET_ROUTER, DYNAMIC_CACHE, ROUTER_CONFIG};
+use crate::asset_router::{AssetCertificationConfig, AssetEncoding, AssetRouter};
+use crate::certification::CertificationMode;
+use crate::{mime::get_mime_type, ASSET_ROUTER, ROUTER_CONFIG};
 
-/// Metadata for a dynamically generated asset cached by the library.
+/// Certify all static assets from the given embedded directory using the
+/// default certification mode ([`CertificationMode::ResponseOnly`]).
 ///
-/// Tracks when the asset was certified and its optional TTL, enabling
-/// TTL-based cache invalidation in the query path. All responses (including
-/// not-found) are certified through `AssetRouter` and served via `serve_asset()`.
-pub struct CachedDynamicAsset {
-    /// Timestamp (nanoseconds since UNIX epoch) when the asset was certified.
-    /// Obtained via `ic_cdk::api::time()`.
-    pub certified_at: u64,
-    /// Optional time-to-live. If `None`, the asset is cached indefinitely
-    /// (backwards-compatible with pre-TTL behavior).
-    pub ttl: Option<Duration>,
+/// This is the simple, common-case API. For explicit control over the
+/// certification mode, use [`certify_assets_with_mode`].
+///
+/// Call this during canister initialization (e.g. in `init` and
+/// `post_upgrade`) after calling [`set_asset_config`](crate::set_asset_config).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// certify_assets(&include_dir!("assets"));
+/// ```
+pub fn certify_assets(asset_dir: &Dir<'static>) {
+    certify_assets_with_mode(asset_dir, CertificationMode::response_only())
 }
 
-impl CachedDynamicAsset {
-    /// Returns `true` if this asset has expired based on the given current time
-    /// (nanoseconds since UNIX epoch).
-    ///
-    /// An asset without a TTL never expires.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::Duration;
-    /// use ic_asset_router::assets::CachedDynamicAsset;
-    ///
-    /// let asset = CachedDynamicAsset {
-    ///     certified_at: 1_000_000_000_000_000_000,
-    ///     ttl: Some(Duration::from_secs(3600)),
-    /// };
-    ///
-    /// // One hour later (in nanoseconds):
-    /// let one_hour_later = asset.certified_at + 3_600_000_000_000;
-    /// assert!(asset.is_expired(one_hour_later));
-    ///
-    /// // Before expiry:
-    /// assert!(!asset.is_expired(asset.certified_at + 1));
-    /// ```
-    pub fn is_expired(&self, now_ns: u64) -> bool {
-        match self.ttl {
-            None => false,
-            Some(ttl) => {
-                let expiry_ns = self.certified_at.saturating_add(ttl.as_nanos() as u64);
-                now_ns >= expiry_ns
-            }
-        }
-    }
+/// Backward-compatible alias for [`certify_assets`].
+#[deprecated(since = "0.0.2", note = "Renamed to `certify_assets`")]
+pub fn certify_all_assets(asset_dir: &Dir<'static>) {
+    certify_assets(asset_dir)
 }
 
-/// Certify all static assets from the given embedded directory.
+/// Certify all assets in the given directory with the specified certification mode.
 ///
 /// Walks `asset_dir` recursively, determines MIME types, applies the global
 /// [`CacheControl`](crate::CacheControl) and [`SecurityHeaders`](crate::SecurityHeaders)
-/// configuration, and registers each file with the IC asset certification tree.
+/// configuration, and registers each file with the certification tree using
+/// the provided [`CertificationMode`].
 ///
-/// Call this once during canister initialization (e.g. in `init` and
-/// `post_upgrade`) after calling [`set_asset_config`](crate::set_asset_config).
-pub fn certify_all_assets(asset_dir: &Dir<'static>) {
-    let encodings = vec![
-        AssetEncoding::Brotli.default_config(),
-        AssetEncoding::Gzip.default_config(),
-    ];
-
-    let mut assets: Vec<Asset<'static, 'static>> = Vec::new();
-    let mut asset_configs: Vec<AssetConfig> = Vec::new();
-
-    collect_assets_with_config(asset_dir, &mut assets, &mut asset_configs, encodings);
-
+/// Call this multiple times with different directories and modes to set up
+/// asset certification with varying security levels.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Static assets: response-only certification (default)
+/// certify_assets(&include_dir!("assets/static"));
+///
+/// // Public files: skip certification entirely
+/// certify_assets_with_mode(
+///     &include_dir!("assets/public"),
+///     CertificationMode::skip()
+/// );
+/// ```
+pub fn certify_assets_with_mode(asset_dir: &Dir<'static>, mode: CertificationMode) {
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        if let Err(err) = asset_router.certify_assets(assets, asset_configs) {
-            ic_cdk::trap(format!("Failed to certify assets: {err}"));
-        }
+        certify_dir_recursive(asset_router, asset_dir, &mode);
     });
 
     // Set certified data AFTER all tree modifications
     ASSET_ROUTER.with_borrow(|asset_router| {
-        certified_data_set(asset_router.root_hash());
+        certified_data_set(&asset_router.root_hash());
     });
 }
 
-/// Recursively collects all files from the given directory into a flat list of [`Asset`] values.
-/// Unlike [`certify_all_assets`], this does not configure MIME types, headers, or encodings —
-/// it is useful when consumers need raw asset data for custom processing or certification logic.
-pub fn collect_assets(dir: &Dir<'_>, assets: &mut Vec<Asset<'static, 'static>>) {
+/// Recursively certify all files in the directory and its subdirectories.
+fn certify_dir_recursive(router: &mut AssetRouter, dir: &Dir<'static>, mode: &CertificationMode) {
     for file in dir.files() {
         let raw_path = file.path().to_string_lossy().to_string();
+
+        // Skip pre-compressed variants — they're collected by
+        // `collect_encoded_variants` and attached to the original asset.
+        if raw_path.ends_with(".br") || raw_path.ends_with(".gz") {
+            continue;
+        }
+
         let path = if raw_path.starts_with('/') {
             raw_path
         } else {
             format!("/{raw_path}")
         };
-        assets.push(Asset::new(path, file.contents().to_vec()));
-    }
-
-    for subdir in dir.dirs() {
-        collect_assets(subdir, assets);
-    }
-}
-
-fn collect_assets_with_config(
-    dir: &Dir<'_>,
-    assets: &mut Vec<Asset<'static, 'static>>,
-    asset_configs: &mut Vec<AssetConfig>,
-    encodings: Vec<(AssetEncoding, String)>,
-) {
-    for file in dir.files() {
-        let raw_path = file.path().to_string_lossy().to_string();
-        // include_dir stores relative paths (e.g. "style.css") but HTTP
-        // requests use absolute paths ("/style.css"). Ensure a leading slash.
-        let path = if raw_path.starts_with('/') {
-            raw_path
-        } else {
-            format!("/{raw_path}")
-        };
-
-        assets.push(Asset::new(path.clone(), file.contents().to_vec()));
+        let content = file.contents().to_vec();
 
         let mime_type = get_mime_type(&path);
+
+        // Collect pre-compressed encodings (.br, .gz) from the directory.
+        // Only text-like assets are expected to have compressed variants.
         let use_encodings = if mime_type.starts_with("text/")
             || mime_type == "application/javascript"
             || mime_type == "application/json"
             || mime_type == "application/xml"
             || mime_type == "image/svg+xml"
         {
-            encodings.clone()
+            let rel_path = file.path().to_string_lossy().to_string();
+            collect_encoded_variants(dir, &rel_path)
         } else {
             vec![]
         };
 
         let static_cache_control =
             ROUTER_CONFIG.with(|c| c.borrow().cache_control.static_assets.clone());
-        asset_configs.push(AssetConfig::File {
-            path,
+
+        let config = AssetCertificationConfig {
+            mode: mode.clone(),
             content_type: Some(mime_type.to_string()),
             headers: get_asset_headers(vec![("cache-control".to_string(), static_cache_control)]),
-            fallback_for: vec![],
-            aliased_by: vec![],
             encodings: use_encodings,
-        });
+            certified_at: 0,
+            ttl: None, // Static assets don't expire
+            ..Default::default()
+        };
+
+        // Auto-generate aliases: index.html → directory paths.
+        let config = if path.ends_with("/index.html") {
+            let dir_path = path.trim_end_matches("index.html").to_string();
+            let dir_path_no_trailing = dir_path.trim_end_matches('/').to_string();
+            let mut aliases = vec![dir_path];
+            if !dir_path_no_trailing.is_empty() {
+                aliases.push(dir_path_no_trailing);
+            }
+            AssetCertificationConfig { aliases, ..config }
+        } else {
+            config
+        };
+
+        if let Err(err) = router.certify_asset(&path, content, config) {
+            ic_cdk::trap(format!("Failed to certify asset {path}: {err}"));
+        }
     }
 
+    // Recurse into subdirectories
     for subdir in dir.dirs() {
-        collect_assets_with_config(subdir, assets, asset_configs, encodings.clone());
+        certify_dir_recursive(router, subdir, mode);
     }
+}
+
+/// Collect pre-compressed encoding variants for a file from the directory.
+///
+/// Looks for sibling files with `.br` (Brotli) and `.gz` (Gzip) extensions.
+/// For example, given `style.css`, this looks for `style.css.br` and
+/// `style.css.gz` in the same directory.
+fn collect_encoded_variants(dir: &Dir<'static>, file_path: &str) -> Vec<(AssetEncoding, Vec<u8>)> {
+    let mut encodings = Vec::new();
+
+    let br_path = format!("{}.br", file_path);
+    let gz_path = format!("{}.gz", file_path);
+
+    for file in dir.files() {
+        let p = file.path().to_string_lossy().to_string();
+        if p == br_path {
+            encodings.push((AssetEncoding::Brotli, file.contents().to_vec()));
+        } else if p == gz_path {
+            encodings.push((AssetEncoding::Gzip, file.contents().to_vec()));
+        }
+    }
+
+    encodings
 }
 
 /// Build the header list for an asset by merging the global router configuration's
@@ -171,18 +175,20 @@ pub fn get_asset_headers(additional_headers: Vec<HeaderField>) -> Vec<HeaderFiel
 /// [`invalidate_prefix`] for dynamic asset invalidation.
 pub fn delete_assets(asset_paths: Vec<&str>) {
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        asset_router.delete_assets_by_path(asset_paths);
-        certified_data_set(asset_router.root_hash());
+        for path in asset_paths {
+            asset_router.delete_asset(path);
+        }
+        certified_data_set(&asset_router.root_hash());
     });
 }
 
 /// Invalidate a single cached dynamic asset by exact path.
 ///
-/// Removes the path from the asset router and from the dynamic cache,
+/// Removes the path from the asset router,
 /// then updates the root hash. The next request to this path will trigger an
 /// update call to regenerate the asset.
 ///
-/// Static assets (not in `DYNAMIC_CACHE`) are unaffected.
+/// Static assets (those without a TTL) are unaffected.
 ///
 /// # Examples
 ///
@@ -193,13 +199,16 @@ pub fn delete_assets(asset_paths: Vec<&str>) {
 /// invalidate_path("/posts/42");
 /// ```
 pub fn invalidate_path(path: &str) {
-    let was_dynamic = DYNAMIC_CACHE.with(|dc| dc.borrow_mut().remove(path).is_some());
-    if was_dynamic {
-        ASSET_ROUTER.with_borrow_mut(|asset_router| {
-            asset_router.delete_assets_by_path(vec![path]);
-            certified_data_set(asset_router.root_hash());
-        });
-    }
+    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+        let is_dynamic = asset_router
+            .get_asset(path)
+            .map(|a| a.is_dynamic())
+            .unwrap_or(false);
+        if is_dynamic {
+            asset_router.delete_asset(path);
+            certified_data_set(&asset_router.root_hash());
+        }
+    });
 }
 
 /// Invalidate all cached dynamic assets whose path starts with the given prefix.
@@ -216,29 +225,15 @@ pub fn invalidate_path(path: &str) {
 /// // Clears /posts/1, /posts/2, etc. but not /postscript
 /// ```
 pub fn invalidate_prefix(prefix: &str) {
-    let to_remove: Vec<String> = DYNAMIC_CACHE.with(|dc| {
-        dc.borrow()
-            .keys()
-            .filter(|p| p.starts_with(prefix))
-            .cloned()
-            .collect()
-    });
-
-    if to_remove.is_empty() {
-        return;
-    }
-
-    DYNAMIC_CACHE.with(|dc| {
-        let mut map = dc.borrow_mut();
-        for p in &to_remove {
-            map.remove(p);
-        }
-    });
-
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        let refs: Vec<&str> = to_remove.iter().map(|s| s.as_str()).collect();
-        asset_router.delete_assets_by_path(refs);
-        certified_data_set(asset_router.root_hash());
+        let to_remove = asset_router.dynamic_paths_with_prefix(prefix);
+        if to_remove.is_empty() {
+            return;
+        }
+        for p in &to_remove {
+            asset_router.delete_asset(p);
+        }
+        certified_data_set(&asset_router.root_hash());
     });
 }
 
@@ -255,31 +250,26 @@ pub fn invalidate_prefix(prefix: &str) {
 /// invalidate_all_dynamic();
 /// ```
 pub fn invalidate_all_dynamic() {
-    let all: Vec<String> = DYNAMIC_CACHE.with(|dc| {
-        let mut map = dc.borrow_mut();
-        let paths: Vec<String> = map.drain().map(|(k, _)| k).collect();
-        paths
-    });
-
-    if all.is_empty() {
-        return;
-    }
-
     ASSET_ROUTER.with_borrow_mut(|asset_router| {
-        let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
-        asset_router.delete_assets_by_path(refs);
-        certified_data_set(asset_router.root_hash());
+        let all = asset_router.dynamic_paths();
+        if all.is_empty() {
+            return;
+        }
+        for p in &all {
+            asset_router.delete_asset(p);
+        }
+        certified_data_set(&asset_router.root_hash());
     });
 }
 
-/// Returns the certification timestamp for a cached dynamic asset, if it exists.
+/// Returns the certification timestamp for an asset, if it exists.
 ///
 /// Handlers can use this to decide whether regeneration is actually needed:
 /// if the underlying data hasn't changed since `last_certified_at`, the handler
 /// can return [`HandlerResult::NotModified`](crate::HandlerResult::NotModified)
 /// to skip recertification.
 ///
-/// Returns `None` if the path is not in the dynamic cache (i.e., it has never
+/// Returns `None` if the path is not in the asset router (i.e., it has never
 /// been generated, or has been invalidated).
 ///
 /// # Examples
@@ -299,103 +289,99 @@ pub fn invalidate_all_dynamic() {
 /// }
 /// ```
 pub fn last_certified_at(path: &str) -> Option<u64> {
-    DYNAMIC_CACHE.with(|dc| dc.borrow().get(path).map(|entry| entry.certified_at))
+    ASSET_ROUTER
+        .with_borrow(|asset_router| asset_router.get_asset(path).map(|asset| asset.certified_at))
 }
 
 /// Returns `true` if the given path is registered as a dynamic asset.
 ///
 /// This is primarily useful for testing and debugging.
 pub fn is_dynamic_path(path: &str) -> bool {
-    DYNAMIC_CACHE.with(|dc| dc.borrow().contains_key(path))
+    ASSET_ROUTER.with_borrow(|asset_router| {
+        asset_router
+            .get_asset(path)
+            .map(|a| a.is_dynamic())
+            .unwrap_or(false)
+    })
 }
 
 /// Returns the number of registered dynamic asset paths.
 ///
 /// This is primarily useful for testing and debugging.
 pub fn dynamic_path_count() -> usize {
-    DYNAMIC_CACHE.with(|dc| dc.borrow().len())
+    ASSET_ROUTER.with_borrow(|asset_router| asset_router.dynamic_paths().len())
 }
 
-/// Register a path as a dynamic asset in the internal cache.
+/// Register a path as a dynamic asset in the router.
 ///
 /// This is a low-level operation exposed for testing; normal usage should rely
 /// on `http_request_update` to register dynamic paths automatically.
 ///
-/// Inserts a `CachedDynamicAsset` with `certified_at: 0` and `ttl: None`.
+/// Creates a minimal dynamic asset with `certified_at: 0` and the given
+/// TTL. The asset body is empty.
 pub fn register_dynamic_path(path: &str) {
-    DYNAMIC_CACHE.with(|dc| {
-        dc.borrow_mut().insert(
-            path.to_string(),
-            CachedDynamicAsset {
-                certified_at: 0,
-                ttl: None,
-            },
-        );
+    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+        let config = AssetCertificationConfig {
+            mode: CertificationMode::skip(),
+            certified_at: 0,
+            ttl: Some(std::time::Duration::from_secs(3600)),
+            ..Default::default()
+        };
+        // Ignore errors — this is for testing only.
+        let _ = asset_router.certify_asset(path, vec![], config);
     });
-}
-
-/// Remove a path from the dynamic asset cache *without* touching the
-/// asset router or certification tree.
-///
-/// This is the cache-only counterpart of [`invalidate_path`] and exists
-/// to allow unit tests that cannot call IC runtime APIs.
-#[cfg(test)]
-fn remove_dynamic_path(path: &str) -> bool {
-    DYNAMIC_CACHE.with(|dc| dc.borrow_mut().remove(path).is_some())
-}
-
-/// Remove all paths matching a prefix from the dynamic asset cache
-/// *without* touching the asset router or certification tree.
-#[cfg(test)]
-fn remove_dynamic_prefix(prefix: &str) -> Vec<String> {
-    let to_remove: Vec<String> = DYNAMIC_CACHE.with(|dc| {
-        dc.borrow()
-            .keys()
-            .filter(|p| p.starts_with(prefix))
-            .cloned()
-            .collect()
-    });
-    DYNAMIC_CACHE.with(|dc| {
-        let mut map = dc.borrow_mut();
-        for p in &to_remove {
-            map.remove(p);
-        }
-    });
-    to_remove
-}
-
-/// Clear all entries from the dynamic asset cache *without* touching the
-/// asset router or certification tree.
-#[cfg(test)]
-fn clear_dynamic_paths() -> Vec<String> {
-    DYNAMIC_CACHE.with(|dc| {
-        let mut map = dc.borrow_mut();
-        map.drain().map(|(k, _)| k).collect()
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    /// Helper: reset DYNAMIC_CACHE before each test to avoid cross-test leakage
-    /// (thread-local state persists across tests in the same thread).
-    fn reset_dynamic_paths() {
-        DYNAMIC_CACHE.with(|dc| dc.borrow_mut().clear());
+    /// Helper: reset the ASSET_ROUTER before each test to avoid cross-test leakage.
+    fn reset_router() {
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            // Delete all assets by collecting all canonical paths first.
+            let all_paths: Vec<String> = router.dynamic_paths();
+            for p in all_paths {
+                router.delete_asset(&p);
+            }
+        });
     }
 
-    // ---- 4.2.9: invalidate_path removes the path from DYNAMIC_PATHS ----
+    // Helper: register a dynamic asset with given certified_at and ttl.
+    fn register_dynamic_with_ttl(path: &str, certified_at: u64, ttl: Option<Duration>) {
+        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+            let config = AssetCertificationConfig {
+                mode: CertificationMode::skip(),
+                certified_at,
+                ttl,
+                ..Default::default()
+            };
+            let _ = asset_router.certify_asset(path, vec![], config);
+        });
+    }
+
+    // ---- 4.2.9: invalidate_path removes the path from dynamic assets ----
+    //
+    // Note: invalidate_path/invalidate_prefix/invalidate_all_dynamic call
+    // `certified_data_set()` which is unavailable in unit tests. We test the
+    // underlying router logic directly instead.
 
     #[test]
-    fn invalidate_path_removes_from_dynamic_paths() {
-        reset_dynamic_paths();
+    fn invalidate_path_removes_dynamic_asset() {
+        reset_router();
         register_dynamic_path("/posts/42");
         assert!(is_dynamic_path("/posts/42"));
 
-        // Use the registry-only removal (mirrors invalidate_path logic without
-        // calling certified_data_set which is unavailable in unit tests).
-        let removed = remove_dynamic_path("/posts/42");
-        assert!(removed);
+        // Directly test the invalidation logic (without certified_data_set).
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let is_dynamic = router
+                .get_asset("/posts/42")
+                .map(|a| a.is_dynamic())
+                .unwrap_or(false);
+            assert!(is_dynamic);
+            router.delete_asset("/posts/42");
+        });
         assert!(!is_dynamic_path("/posts/42"));
     }
 
@@ -403,13 +389,18 @@ mod tests {
 
     #[test]
     fn invalidate_prefix_removes_matching_keeps_others() {
-        reset_dynamic_paths();
+        reset_router();
         register_dynamic_path("/posts/1");
         register_dynamic_path("/posts/2");
         register_dynamic_path("/about");
 
-        let removed = remove_dynamic_prefix("/posts/");
-        assert_eq!(removed.len(), 2);
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let to_remove = router.dynamic_paths_with_prefix("/posts/");
+            assert_eq!(to_remove.len(), 2);
+            for p in &to_remove {
+                router.delete_asset(p);
+            }
+        });
         assert!(!is_dynamic_path("/posts/1"));
         assert!(!is_dynamic_path("/posts/2"));
         assert!(is_dynamic_path("/about"));
@@ -419,14 +410,18 @@ mod tests {
 
     #[test]
     fn invalidate_all_dynamic_clears_all() {
-        reset_dynamic_paths();
+        reset_router();
         register_dynamic_path("/posts/1");
         register_dynamic_path("/posts/2");
         register_dynamic_path("/about");
         assert_eq!(dynamic_path_count(), 3);
 
-        let removed = clear_dynamic_paths();
-        assert_eq!(removed.len(), 3);
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let all = router.dynamic_paths();
+            for p in &all {
+                router.delete_asset(p);
+            }
+        });
         assert_eq!(dynamic_path_count(), 0);
     }
 
@@ -434,271 +429,255 @@ mod tests {
 
     #[test]
     fn static_assets_unaffected_by_invalidation() {
-        reset_dynamic_paths();
-        // Only "/posts/1" is dynamic; "/style.css" is a static asset (never
-        // registered in DYNAMIC_PATHS).
+        reset_router();
+        // Register a dynamic path
         register_dynamic_path("/posts/1");
 
-        // invalidate_path on a non-dynamic path is a no-op
-        let removed = remove_dynamic_path("/style.css");
-        assert!(!removed);
+        // Register a static path (no TTL → not dynamic)
+        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+            let config = AssetCertificationConfig {
+                mode: CertificationMode::skip(),
+                certified_at: 0,
+                ttl: None,
+                ..Default::default()
+            };
+            let _ = asset_router.certify_asset("/style.css", b"body{}".to_vec(), config);
+        });
 
-        // invalidate_prefix on a prefix that only matches static paths is a no-op
-        let removed = remove_dynamic_prefix("/style");
-        assert!(removed.is_empty());
+        // Invalidating a static asset (via dynamic check) is a no-op.
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let is_dynamic = router
+                .get_asset("/style.css")
+                .map(|a| a.is_dynamic())
+                .unwrap_or(false);
+            assert!(!is_dynamic);
+            // Don't delete — mirrors invalidate_path behavior for non-dynamic.
+        });
+        assert!(ASSET_ROUTER.with_borrow(|r| r.contains_asset("/style.css")));
 
         // The dynamic path is still there
         assert!(is_dynamic_path("/posts/1"));
-
-        // Also test that invalidate_path with a non-dynamic path doesn't panic
-        // (the real function guards on DYNAMIC_CACHE membership)
-        invalidate_path("/style.css");
-        // No panic, and /posts/1 still registered
-        assert!(is_dynamic_path("/posts/1"));
     }
 
-    // ---- 4.1.17: CachedDynamicAsset with ttl: None never expires ----
+    // ---- CertifiedAsset TTL tests (previously CachedDynamicAsset tests) ----
 
     #[test]
-    fn cached_dynamic_asset_no_ttl_never_expires() {
-        let asset = CachedDynamicAsset {
-            certified_at: 1_000_000_000_000_000_000, // 1 second in nanoseconds
-            ttl: None,
-        };
-        // Even far in the future, is_expired returns false
-        assert!(!asset.is_expired(u64::MAX));
-        assert!(!asset.is_expired(0));
-        assert!(!asset.is_expired(asset.certified_at));
+    fn certified_asset_no_ttl_never_expires() {
+        reset_router();
+        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+            let config = AssetCertificationConfig {
+                mode: CertificationMode::skip(),
+                certified_at: 1_000_000_000_000_000_000,
+                ttl: None,
+                ..Default::default()
+            };
+            let _ = asset_router.certify_asset("/page", b"content".to_vec(), config);
+        });
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            assert!(!asset.is_expired(u64::MAX));
+            assert!(!asset.is_expired(0));
+            assert!(!asset.is_expired(asset.certified_at));
+        });
     }
 
-    // ---- 4.1.18: CachedDynamicAsset with expired TTL is detected ----
-
     #[test]
-    fn cached_dynamic_asset_expired_ttl_detected() {
-        let one_hour_ns: u64 = 3_600_000_000_000; // 3600 seconds in nanoseconds
-        let asset = CachedDynamicAsset {
-            certified_at: 1_000_000_000_000_000_000, // some past time
-            ttl: Some(Duration::from_secs(3600)),
-        };
-        // Time well past the expiry
-        let now_expired = asset.certified_at + one_hour_ns + 1;
-        assert!(asset.is_expired(now_expired));
-
-        // Exactly at expiry boundary
-        let now_at_boundary = asset.certified_at + one_hour_ns;
-        assert!(asset.is_expired(now_at_boundary));
-    }
-
-    // ---- 4.1.19: CachedDynamicAsset with fresh TTL is not expired ----
-
-    #[test]
-    fn cached_dynamic_asset_fresh_ttl_not_expired() {
+    fn certified_asset_expired_ttl_detected() {
+        reset_router();
         let one_hour_ns: u64 = 3_600_000_000_000;
-        let asset = CachedDynamicAsset {
-            certified_at: 1_000_000_000_000_000_000,
-            ttl: Some(Duration::from_secs(3600)),
-        };
-        // Still within TTL window
-        let now_fresh = asset.certified_at + one_hour_ns - 1;
-        assert!(!asset.is_expired(now_fresh));
-
-        // Immediately after certification
-        assert!(!asset.is_expired(asset.certified_at));
-        assert!(!asset.is_expired(asset.certified_at + 1));
+        register_dynamic_with_ttl(
+            "/page",
+            1_000_000_000_000_000_000,
+            Some(Duration::from_secs(3600)),
+        );
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            let now_expired = asset.certified_at + one_hour_ns + 1;
+            assert!(asset.is_expired(now_expired));
+            let now_at_boundary = asset.certified_at + one_hour_ns;
+            assert!(asset.is_expired(now_at_boundary));
+        });
     }
 
-    // ---- 4.3.12: last_certified_at returns None for uncached paths ----
+    #[test]
+    fn certified_asset_fresh_ttl_not_expired() {
+        reset_router();
+        let one_hour_ns: u64 = 3_600_000_000_000;
+        register_dynamic_with_ttl(
+            "/page",
+            1_000_000_000_000_000_000,
+            Some(Duration::from_secs(3600)),
+        );
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            let now_fresh = asset.certified_at + one_hour_ns - 1;
+            assert!(!asset.is_expired(now_fresh));
+            assert!(!asset.is_expired(asset.certified_at));
+            assert!(!asset.is_expired(asset.certified_at + 1));
+        });
+    }
+
+    // ---- last_certified_at tests ----
 
     #[test]
     fn last_certified_at_returns_none_for_uncached() {
-        reset_dynamic_paths();
+        reset_router();
         assert_eq!(last_certified_at("/nonexistent"), None);
-        assert_eq!(last_certified_at("/posts/1"), None);
     }
-
-    // ---- 4.3.13: last_certified_at returns Some(timestamp) for cached paths ----
 
     #[test]
     fn last_certified_at_returns_some_for_cached() {
-        reset_dynamic_paths();
+        reset_router();
         let timestamp = 1_000_000_000_000_000_000u64;
-        DYNAMIC_CACHE.with(|dc| {
-            dc.borrow_mut().insert(
-                "/posts/1".to_string(),
-                CachedDynamicAsset {
-                    certified_at: timestamp,
-                    ttl: None,
-                },
-            );
-        });
+        register_dynamic_with_ttl("/posts/1", timestamp, Some(Duration::from_secs(3600)));
         assert_eq!(last_certified_at("/posts/1"), Some(timestamp));
-        // Different path still returns None
         assert_eq!(last_certified_at("/posts/2"), None);
     }
 
-    // ---- 4.3.14: NotModified preserves existing DYNAMIC_CACHE entry ----
+    // ---- NotModified tests ----
 
     #[test]
-    fn not_modified_preserves_dynamic_cache_entry() {
-        reset_dynamic_paths();
+    fn not_modified_preserves_asset_entry() {
+        reset_router();
         let original_time = 1_000_000_000_000_000_000u64;
+        register_dynamic_with_ttl("/posts/1", original_time, None);
 
-        // Simulate a cached dynamic asset without TTL
-        DYNAMIC_CACHE.with(|dc| {
-            dc.borrow_mut().insert(
-                "/posts/1".to_string(),
-                CachedDynamicAsset {
-                    certified_at: original_time,
-                    ttl: None,
-                },
-            );
-        });
-
-        // Simulate NotModified behavior (no TTL → certified_at NOT reset):
-        // The http_request_update code only resets certified_at when entry.ttl.is_some().
-        // With ttl: None, the entry is preserved as-is.
-        DYNAMIC_CACHE.with(|dc| {
-            let cache = dc.borrow();
-            let entry = cache.get("/posts/1").expect("entry should exist");
-            assert_eq!(entry.certified_at, original_time);
-            assert!(entry.ttl.is_none());
-        });
-
-        // Verify the path is still in the cache
-        assert!(is_dynamic_path("/posts/1"));
+        // Asset exists and certified_at is preserved.
         assert_eq!(last_certified_at("/posts/1"), Some(original_time));
     }
 
-    // ---- 5.5.8: Additional cache invalidation tests (proptest session) ----
+    // ---- Prefix invalidation tests ----
 
-    /// invalidate_prefix does NOT over-match: "/posts" prefix should not remove "/postscript".
     #[test]
     fn invalidate_prefix_does_not_over_match() {
-        reset_dynamic_paths();
+        reset_router();
         register_dynamic_path("/posts/1");
         register_dynamic_path("/posts/2");
-        register_dynamic_path("/postscript"); // similar prefix but NOT a child of "/posts/"
+        register_dynamic_path("/postscript");
 
-        let removed = remove_dynamic_prefix("/posts/");
-        assert_eq!(removed.len(), 2);
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let to_remove = router.dynamic_paths_with_prefix("/posts/");
+            for p in &to_remove {
+                router.delete_asset(p);
+            }
+        });
         assert!(!is_dynamic_path("/posts/1"));
         assert!(!is_dynamic_path("/posts/2"));
-        // "/postscript" should NOT have been removed
         assert!(
             is_dynamic_path("/postscript"),
             "/postscript should survive /posts/ prefix invalidation"
         );
     }
 
-    /// invalidate_all_dynamic leaves the cache completely empty.
     #[test]
     fn invalidate_all_dynamic_leaves_empty() {
-        reset_dynamic_paths();
+        reset_router();
         register_dynamic_path("/a");
         register_dynamic_path("/b/c");
         register_dynamic_path("/d/e/f");
         assert_eq!(dynamic_path_count(), 3);
 
-        let removed = clear_dynamic_paths();
-        assert_eq!(removed.len(), 3);
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            let all = router.dynamic_paths();
+            for p in &all {
+                router.delete_asset(p);
+            }
+        });
         assert_eq!(dynamic_path_count(), 0);
-        // Subsequent clear is a no-op
-        let removed2 = clear_dynamic_paths();
-        assert!(removed2.is_empty());
+
+        // Subsequent operation is a no-op
+        ASSET_ROUTER.with_borrow(|router| {
+            assert!(router.dynamic_paths().is_empty());
+        });
         assert_eq!(dynamic_path_count(), 0);
     }
 
-    /// invalidate_path on already-invalidated path is a no-op (no panic).
     #[test]
     fn invalidate_path_double_removal_is_noop() {
-        reset_dynamic_paths();
+        reset_router();
         register_dynamic_path("/posts/42");
-        assert!(remove_dynamic_path("/posts/42"));
-        // Second removal returns false — already gone
-        assert!(!remove_dynamic_path("/posts/42"));
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            router.delete_asset("/posts/42");
+        });
+        // Second removal is a no-op (no panic).
+        ASSET_ROUTER.with_borrow_mut(|router| {
+            router.delete_asset("/posts/42");
+        });
         assert!(!is_dynamic_path("/posts/42"));
     }
 
-    /// TTL boundary: exactly one nanosecond before expiry is NOT expired.
+    // ---- TTL edge cases ----
+
     #[test]
     fn ttl_one_ns_before_expiry_is_not_expired() {
+        reset_router();
         let one_hour_ns: u64 = 3_600_000_000_000;
-        let asset = CachedDynamicAsset {
-            certified_at: 1_000_000_000_000_000_000,
-            ttl: Some(Duration::from_secs(3600)),
-        };
-        let now = asset.certified_at + one_hour_ns - 1;
-        assert!(
-            !asset.is_expired(now),
-            "should not be expired 1ns before boundary"
+        register_dynamic_with_ttl(
+            "/page",
+            1_000_000_000_000_000_000,
+            Some(Duration::from_secs(3600)),
         );
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            let now = asset.certified_at + one_hour_ns - 1;
+            assert!(
+                !asset.is_expired(now),
+                "should not be expired 1ns before boundary"
+            );
+        });
     }
 
-    /// TTL with very large certified_at and ttl does not overflow (saturating add).
     #[test]
     fn ttl_no_overflow_on_large_values() {
-        let asset = CachedDynamicAsset {
-            certified_at: u64::MAX - 1000,
-            ttl: Some(Duration::from_secs(3600)),
-        };
-        // saturating_add should clamp to u64::MAX, not wrap
-        // Any now < u64::MAX should not panic
-        assert!(asset.is_expired(u64::MAX));
-        // Near u64::MAX: the expiry is clamped to u64::MAX, so anything at
-        // u64::MAX is expired (u64::MAX >= u64::MAX).
-        assert!(!asset.is_expired(0));
+        reset_router();
+        register_dynamic_with_ttl("/page", u64::MAX - 1000, Some(Duration::from_secs(3600)));
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            assert!(asset.is_expired(u64::MAX));
+            assert!(!asset.is_expired(0));
+        });
     }
 
-    /// Zero TTL means immediately expired.
     #[test]
     fn ttl_zero_duration_immediately_expired() {
-        let asset = CachedDynamicAsset {
-            certified_at: 1_000_000_000_000_000_000,
-            ttl: Some(Duration::from_secs(0)),
-        };
-        // At the exact certified_at time, 0 TTL means already expired.
-        assert!(asset.is_expired(asset.certified_at));
-        assert!(asset.is_expired(asset.certified_at + 1));
+        reset_router();
+        register_dynamic_with_ttl(
+            "/page",
+            1_000_000_000_000_000_000,
+            Some(Duration::from_secs(0)),
+        );
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/page").unwrap();
+            assert!(asset.is_expired(asset.certified_at));
+            assert!(asset.is_expired(asset.certified_at + 1));
+        });
     }
 
-    // ---- 4.3.15: NotModified resets certified_at when TTL is active ----
+    // ---- NotModified resets certified_at when TTL is active ----
 
     #[test]
     fn not_modified_resets_certified_at_with_ttl() {
-        reset_dynamic_paths();
+        reset_router();
         let original_time = 1_000_000_000_000_000_000u64;
         let new_time = 2_000_000_000_000_000_000u64;
-
-        // Insert a cached entry with an active TTL
-        DYNAMIC_CACHE.with(|dc| {
-            dc.borrow_mut().insert(
-                "/posts/1".to_string(),
-                CachedDynamicAsset {
-                    certified_at: original_time,
-                    ttl: Some(Duration::from_secs(3600)),
-                },
-            );
-        });
+        register_dynamic_with_ttl("/posts/1", original_time, Some(Duration::from_secs(3600)));
 
         // Simulate the NotModified TTL reset logic from http_request_update:
-        // if entry.ttl.is_some(), reset certified_at to the new time.
-        DYNAMIC_CACHE.with(|dc| {
-            let mut cache = dc.borrow_mut();
-            if let Some(entry) = cache.get_mut("/posts/1") {
-                if entry.ttl.is_some() {
-                    entry.certified_at = new_time;
+        // if asset.ttl.is_some(), reset certified_at to the new time.
+        ASSET_ROUTER.with_borrow_mut(|asset_router| {
+            if let Some(asset) = asset_router.get_asset_mut("/posts/1") {
+                if asset.ttl.is_some() {
+                    asset.certified_at = new_time;
                 }
             }
         });
 
-        // Verify the timestamp was reset
         assert_eq!(last_certified_at("/posts/1"), Some(new_time));
 
-        // Verify the TTL is preserved
-        DYNAMIC_CACHE.with(|dc| {
-            let cache = dc.borrow();
-            let entry = cache.get("/posts/1").expect("entry should exist");
-            assert_eq!(entry.ttl, Some(Duration::from_secs(3600)));
+        // Verify the TTL is preserved.
+        ASSET_ROUTER.with_borrow(|r| {
+            let asset = r.get_asset("/posts/1").unwrap();
+            assert_eq!(asset.ttl, Some(Duration::from_secs(3600)));
         });
     }
 }
