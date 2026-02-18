@@ -526,6 +526,12 @@ impl AssetRouter {
             HttpCertificationPath::exact(path.to_string())
         };
         let tree_entry = HttpCertificationTreeEntry::new(tree_path, certification);
+
+        // Remove stale tree entry if re-certifying an existing path.
+        if let Some(old_asset) = self.assets.get(path) {
+            self.tree.borrow_mut().delete(&old_asset.tree_entry);
+        }
+
         self.tree.borrow_mut().insert(&tree_entry);
 
         // Build encodings map.

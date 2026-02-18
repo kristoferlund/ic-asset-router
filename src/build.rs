@@ -875,13 +875,21 @@ fn scan_certification_attribute(path: &Path) -> bool {
         if let syn::Item::Fn(func) = item {
             for attr in &func.attrs {
                 if is_route_attribute(attr) {
-                    let tokens = attr
-                        .meta
-                        .require_list()
-                        .map(|list| list.tokens.to_string())
-                        .unwrap_or_default();
-                    if tokens.contains("certification") {
-                        return true;
+                    let list = match attr.meta.require_list() {
+                        Ok(l) => l,
+                        Err(_) => continue,
+                    };
+                    let nested: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> =
+                        match list.parse_args_with(syn::punctuated::Punctuated::parse_terminated) {
+                            Ok(n) => n,
+                            Err(_) => continue,
+                        };
+                    for meta in &nested {
+                        if let syn::Meta::NameValue(nv) = meta {
+                            if nv.path.is_ident("certification") {
+                                return true;
+                            }
+                        }
                     }
                 }
             }

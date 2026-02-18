@@ -23,12 +23,11 @@ End-to-end tests for the router library using [PocketIC](https://github.com/dfin
 From the repository root:
 
 ```
-cd tests/e2e && ./build_and_test.sh
+cd tests/e2e/test_canister && cargo build --release --target wasm32-unknown-unknown
+cd tests/e2e && cargo test -- --test-threads=1
 ```
 
-This script:
-1. Builds the test canister WASM (`tests/e2e/test_canister/`) in release mode
-2. Runs the E2E test crate against the built WASM via PocketIC
+Step 1 builds the test canister WASM in release mode. Step 2 runs the E2E test crate against the built WASM via PocketIC.
 
 Tests run single-threaded (`--test-threads=1`) to avoid port conflicts between PocketIC HTTP gateway instances.
 
@@ -38,7 +37,6 @@ Tests run single-threaded (`--test-threads=1`) to avoid port conflicts between P
 tests/e2e/
   Cargo.toml            # Test crate: depends on pocket-ic, reqwest
   src/lib.rs            # setup() helper + all test functions
-  build_and_test.sh     # Build WASM then run tests
   README.md             # This file
   test_canister/        # The canister deployed into PocketIC
     Cargo.toml
@@ -77,8 +75,13 @@ tests/e2e/
 In CI, ensure the `wasm32-unknown-unknown` target is installed, then run:
 
 ```yaml
+- name: Build test canister WASM
+  run: cargo build --release --target wasm32-unknown-unknown
+  working-directory: tests/e2e/test_canister
+
 - name: Run E2E tests
-  run: cd tests/e2e && ./build_and_test.sh
+  run: cargo test -- --test-threads=1
+  working-directory: tests/e2e
 ```
 
 The PocketIC server binary is downloaded automatically by the `pocket-ic` crate. If your CI environment restricts network access during test execution, pre-download the binary and set `POCKET_IC_BIN`.

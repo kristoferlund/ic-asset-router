@@ -84,5 +84,10 @@ jobs:
           key: ${{ runner.os }}-e2e-${{ hashFiles('tests/e2e/**/Cargo.lock', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-e2e-
 
+      - name: Build test canister WASM
+        run: cargo build --release --target wasm32-unknown-unknown
+        working-directory: tests/e2e/test_canister
+
       - name: Run E2E tests
-        run: cd tests/e2e && bash build_and_test.sh
+        run: cargo test -- --test-threads=1
+        working-directory: tests/e2e

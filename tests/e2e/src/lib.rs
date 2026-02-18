@@ -6,7 +6,7 @@ mod tests {
     use std::time::Duration;
 
     /// Path to the pre-built test canister WASM.
-    /// The build_and_test.sh script compiles this before running the tests.
+    /// Build with: `cargo build --release --target wasm32-unknown-unknown` in `test_canister/`.
     const WASM_PATH: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/test_canister/target/wasm32-unknown-unknown/release/test_canister.wasm"
@@ -20,7 +20,7 @@ mod tests {
         pic.add_cycles(canister_id, 2_000_000_000_000);
 
         let wasm = std::fs::read(WASM_PATH)
-            .expect("test canister WASM not found — run build_and_test.sh to compile it first");
+            .expect("test canister WASM not found — build it first: cd test_canister && cargo build --release --target wasm32-unknown-unknown");
         pic.install_canister(canister_id, wasm, vec![], None);
 
         let gateway_url = pic.make_live(None);
