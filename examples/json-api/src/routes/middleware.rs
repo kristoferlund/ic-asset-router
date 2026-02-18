@@ -1,5 +1,4 @@
-use ic_asset_router::router::RouteParams;
-use ic_asset_router::{HttpRequest, HttpResponse};
+use ic_asset_router::{HttpRequest, HttpResponse, RouteParams};
 
 /// Root-level CORS middleware.
 ///
@@ -25,7 +24,7 @@ pub fn middleware(
     // Short-circuit OPTIONS preflight with 204 No Content.
     if req.method().as_str() == "OPTIONS" {
         return HttpResponse::builder()
-            .with_status_code(ic_http_certification::StatusCode::NO_CONTENT)
+            .with_status_code(ic_asset_router::StatusCode::NO_CONTENT)
             .with_headers(cors_headers)
             .build();
     }

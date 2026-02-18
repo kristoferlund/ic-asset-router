@@ -173,7 +173,7 @@ Untyped query params are always available via `ctx.query`.
 
 ```rust
 // src/routes/middleware.rs
-use ic_asset_router::{HttpRequest, HttpResponse, router::RouteParams};
+use ic_asset_router::{HttpRequest, HttpResponse, RouteParams};
 
 pub fn middleware(
     req: HttpRequest,

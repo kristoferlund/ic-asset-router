@@ -1,5 +1,4 @@
-use ic_asset_router::router::RouteParams;
-use ic_asset_router::{HttpRequest, HttpResponse};
+use ic_asset_router::{HttpRequest, HttpResponse, RouteParams};
 
 /// Adds X-Test-Middleware header to all responses.
 pub fn middleware(

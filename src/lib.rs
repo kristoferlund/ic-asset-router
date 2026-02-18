@@ -356,7 +356,7 @@ pub use context::{
 pub use ic_asset_router_macros::route;
 pub use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
 pub use route_config::RouteConfig;
-pub use router::HandlerResult;
+pub use router::{HandlerResult, RouteParams};
 
 thread_local! {
     static HTTP_TREE: Rc<RefCell<HttpCertificationTree>> = Default::default();
