@@ -93,12 +93,12 @@ Depends on: 8.1
 
 Depends on: None (independent, but scheduled after 8.3 to avoid merge conflicts)
 
-- [ ] **8.4.1** Rewrite `scan_pub_fns` in `src/build.rs` to use `syn::parse_file` + `Item::Fn` iteration instead of text-based line matching. Only detect functions with `syn::Visibility::Public`.
-- [ ] **8.4.2** Add tests: `scan_pub_fns` ignores private functions (`fn get`), handles multi-line function signatures, handles functions with generics.
-- [ ] **8.4.3** Fix `scan_route_attribute` in `src/build.rs`: replace the `tokens.find("path")` substring approach with proper `syn` meta parsing (walk `Meta::List` contents, match on exact ident `path`).
-- [ ] **8.4.4** Add test: `scan_route_attribute` does not match a hypothetical attribute containing `xpath` or `mypath` as a value.
-- [ ] **8.4.5** Replace all bare `.unwrap()` on filesystem operations in `src/build.rs` (`fs::read_dir`, `entry.unwrap()`, `file_name().unwrap()`, `to_str().unwrap()`) with `.unwrap_or_else(|e| panic!("...{path}...{e}"))` including the file/directory path in the message.
-- [ ] **8.4.6** Verify: `cargo check` and `cargo test` pass.
+- [x] **8.4.1** Rewrite `scan_pub_fns` in `src/build.rs` to use `syn::parse_file` + `Item::Fn` iteration instead of text-based line matching. Only detect functions with `syn::Visibility::Public`.
+- [x] **8.4.2** Add tests: `scan_pub_fns` ignores private functions (`fn get`), handles multi-line function signatures, handles functions with generics.
+- [x] **8.4.3** Fix `scan_route_attribute` in `src/build.rs`: replace the `tokens.find("path")` substring approach with proper `syn` meta parsing (walk `Meta::List` contents, match on exact ident `path`).
+- [x] **8.4.4** Add test: `scan_route_attribute` does not match a hypothetical attribute containing `xpath` or `mypath` as a value.
+- [x] **8.4.5** Replace all bare `.unwrap()` on filesystem operations in `src/build.rs` (`fs::read_dir`, `entry.unwrap()`, `file_name().unwrap()`, `to_str().unwrap()`) with `.unwrap_or_else(|e| panic!("...{path}...{e}"))` including the file/directory path in the message.
+- [x] **8.4.6** Verify: `cargo check` and `cargo test` pass.
 
 ---
 

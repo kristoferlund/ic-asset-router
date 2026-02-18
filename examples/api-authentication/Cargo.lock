@@ -15,7 +15,6 @@ dependencies = [
  "candid",
  "ic-asset-router",
  "ic-cdk",
- "ic-http-certification",
 ]
 
 [[package]]
@@ -292,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "ic-asset-router"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ic-asset-router-macros",
  "ic-cdk",
@@ -307,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "ic-asset-router-macros"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",

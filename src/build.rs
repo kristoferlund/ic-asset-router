@@ -312,13 +312,16 @@ pub fn generate_routes_from(dir: &str) {
 
     output.push_str("        root\n    };\n}\n");
 
-    let mut file = File::create(&generated_file).unwrap();
-    file.write_all(output.as_bytes()).unwrap();
+    let mut file = File::create(&generated_file)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", generated_file.display()));
+    file.write_all(output.as_bytes())
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", generated_file.display()));
 
     // Generate route_manifest.json into OUT_DIR for debugging and inspection.
     let manifest_file = Path::new(&out_dir).join("route_manifest.json");
     let manifest = generate_manifest(&exports, &middleware_exports, &not_found_exports);
-    fs::write(manifest_file, manifest).unwrap();
+    fs::write(&manifest_file, manifest)
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", manifest_file.display()));
 }
 
 /// Generate a JSON route manifest listing all registered routes, middleware,
@@ -464,18 +467,26 @@ fn process_directory(
 
     let mut children = vec![];
 
-    for entry in fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
+    for entry in fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("failed to read directory {}: {e}", dir.display()))
+    {
+        let entry =
+            entry.unwrap_or_else(|e| panic!("failed to read entry in {}: {e}", dir.display()));
         let path = entry.path();
 
         if path.is_dir() {
-            let name = path.file_name().unwrap().to_str().unwrap();
+            let name = path
+                .file_name()
+                .unwrap_or_else(|| panic!("directory has no file name: {}", path.display()))
+                .to_str()
+                .unwrap_or_else(|| panic!("non-UTF-8 directory name: {}", path.display()));
             let next_prefix = if prefix.is_empty() {
                 format!("/{name}")
             } else {
                 format!("{prefix}/{name}")
             };
-            fs::create_dir_all(&path).unwrap();
+            fs::create_dir_all(&path)
+                .unwrap_or_else(|e| panic!("failed to create directory {}: {e}", path.display()));
             // If this directory is a dynamic param (starts with `_`), accumulate
             // it for Params struct generation in child directories.
             let mut child_params: Vec<AccumulatedParam> = accumulated_params
@@ -506,7 +517,11 @@ fn process_directory(
                 children.push(format!("pub mod {mod_name};\n"));
             }
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let stem = path
+                .file_stem()
+                .unwrap_or_else(|| panic!("file has no stem: {}", path.display()))
+                .to_str()
+                .unwrap_or_else(|| panic!("non-UTF-8 file name: {}", path.display()));
             if stem == "mod" {
                 continue;
             }
@@ -705,32 +720,34 @@ fn process_directory(
         contents.push_str(&children.concat());
 
         let mod_path = dir.join("mod.rs");
-        fs::write(mod_path, contents).unwrap();
+        fs::write(&mod_path, contents)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", mod_path.display()));
     }
 }
 
 /// Scan a Rust source file for all `pub fn` declarations and return their names.
 ///
-/// This is a best-effort text scan — not a full parser. It looks for lines
-/// matching `pub fn <name>(` and extracts `<name>`. Used as the shared
-/// implementation for [`has_pub_fn`] and [`detect_method_exports`].
+/// Uses `syn::parse_file` to walk the AST, so it correctly handles multi-line
+/// signatures, generics, and only detects truly `pub` functions. Used as the
+/// shared implementation for [`has_pub_fn`] and [`detect_method_exports`].
 fn scan_pub_fns(path: &Path) -> Vec<String> {
-    let source = fs::read_to_string(path).unwrap_or_default();
-    let prefix = "pub fn ";
-    let mut names = Vec::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            // Find the function name: the identifier before '(' or whitespace.
-            if let Some(paren_pos) = rest.find('(') {
-                let name = rest[..paren_pos].trim();
-                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    names.push(name.to_string());
+    let source = fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let file = match syn::parse_file(&source) {
+        Ok(f) => f,
+        Err(_) => return vec![], // unparseable file — skip gracefully
+    };
+    file.items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Fn(func) = item {
+                if matches!(func.vis, syn::Visibility::Public(_)) {
+                    return Some(func.sig.ident.to_string());
                 }
             }
-        }
-    }
-    names
+            None
+        })
+        .collect()
 }
 
 /// Best-effort check: does the file contain `pub fn <name>(`?
@@ -780,37 +797,20 @@ fn scan_route_attribute(path: &Path) -> Option<String> {
         if let syn::Item::Fn(func) = item {
             for attr in &func.attrs {
                 if is_route_attribute(attr) {
-                    let tokens = attr
-                        .meta
-                        .require_list()
-                        .map(|list| list.tokens.to_string())
+                    let list = attr.meta.require_list().ok()?;
+                    // Parse attribute arguments as comma-separated Meta items.
+                    let nested: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> = list
+                        .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
                         .ok()?;
-                    // Parse `path = "value"` from the stringified tokens.
-                    // The tokenizer normalizes whitespace, so we get `path = "value"`.
-                    if let Some(rest) = tokens.strip_prefix("path") {
-                        let rest = rest.trim_start();
-                        if let Some(rest) = rest.strip_prefix('=') {
-                            let rest = rest.trim();
-                            if rest.starts_with('"') && rest.contains('"') {
-                                // Extract the string between the first pair of quotes
-                                let inner = &rest[1..];
-                                if let Some(end) = inner.find('"') {
-                                    return Some(inner[..end].to_string());
-                                }
-                            }
-                        }
-                    }
-                    // Also handle when `path` is not the first argument:
-                    // e.g., `certification = "skip" , path = "ogimage.png"`
-                    if let Some(idx) = tokens.find("path") {
-                        let rest = &tokens[idx + 4..];
-                        let rest = rest.trim_start();
-                        if let Some(rest) = rest.strip_prefix('=') {
-                            let rest = rest.trim();
-                            if rest.starts_with('"') {
-                                let inner = &rest[1..];
-                                if let Some(end) = inner.find('"') {
-                                    return Some(inner[..end].to_string());
+                    for meta in &nested {
+                        if let syn::Meta::NameValue(nv) = meta {
+                            if nv.path.is_ident("path") {
+                                if let syn::Expr::Lit(syn::ExprLit {
+                                    lit: syn::Lit::Str(lit_str),
+                                    ..
+                                }) = &nv.value
+                                {
+                                    return Some(lit_str.value());
                                 }
                             }
                         }
@@ -1172,6 +1172,31 @@ pub fn get() -> String { todo!() }
         assert_eq!(scan_route_attribute(&path), None);
     }
 
+    #[test]
+    fn scan_route_attribute_no_false_match_on_xpath() {
+        // `xpath` and `mypath` should NOT be matched as `path`
+        let path = write_temp_file(
+            "scan_xpath.rs",
+            r#"
+#[route(xpath = "ogimage.png")]
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), None);
+    }
+
+    #[test]
+    fn scan_route_attribute_no_false_match_on_mypath() {
+        let path = write_temp_file(
+            "scan_mypath.rs",
+            r#"
+#[route(mypath = "ogimage.png")]
+pub fn get() -> String { todo!() }
+"#,
+        );
+        assert_eq!(scan_route_attribute(&path), None);
+    }
+
     // --- detect_method_exports tests ---
 
     #[test]
@@ -1280,6 +1305,49 @@ pub fn middleware_v2(req: HttpRequest) -> HttpResponse<'static> { todo!() }
 "#,
         );
         assert!(!has_pub_fn(&path, "middleware"));
+    }
+
+    // --- scan_pub_fns tests ---
+
+    #[test]
+    fn scan_pub_fns_ignores_private_functions() {
+        let path = write_temp_file(
+            "spf_private.rs",
+            r#"
+fn get() -> () { todo!() }
+pub fn post() -> () { todo!() }
+"#,
+        );
+        let fns = scan_pub_fns(&path);
+        assert_eq!(fns, vec!["post"]);
+    }
+
+    #[test]
+    fn scan_pub_fns_handles_multiline_signature() {
+        let path = write_temp_file(
+            "spf_multiline.rs",
+            r#"
+pub fn get(
+    ctx: RouteContext<()>,
+) -> HttpResponse<'static> {
+    todo!()
+}
+"#,
+        );
+        let fns = scan_pub_fns(&path);
+        assert_eq!(fns, vec!["get"]);
+    }
+
+    #[test]
+    fn scan_pub_fns_handles_generics() {
+        let path = write_temp_file(
+            "spf_generics.rs",
+            r#"
+pub fn get<T: Default>(x: T) -> T { x }
+"#,
+        );
+        let fns = scan_pub_fns(&path);
+        assert_eq!(fns, vec!["get"]);
     }
 
     // --- sanitize_mod tests ---
