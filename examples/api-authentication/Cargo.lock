@@ -302,6 +302,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "syn 2.0.116",
 ]
 
 [[package]]

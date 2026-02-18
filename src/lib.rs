@@ -97,7 +97,8 @@
 //! |------|-------------|----------------|
 //! | **Response-only** | Same URL always returns same content | Static pages, blog posts, docs |
 //! | **Skip** | Tampering has no security impact | Health checks, `/ping` |
-//! | **Authenticated** | Response depends on caller identity | User profiles, dashboards |
+//! | **Skip + handler auth** | Fast auth-gated API (query-path perf) | `/api/customers`, `/api/me` |
+//! | **Authenticated** | Response depends on caller identity, must be tamper-proof | User profiles, dashboards |
 //! | **Custom (Full)** | Response depends on specific headers/params | Content negotiation, pagination |
 //!
 //! ## Response-Only (Default)
@@ -123,16 +124,46 @@
 //! ```rust,ignore
 //! #[route(certification = "skip")]
 //! pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
-//!     // No certification overhead
+//!     // Handler runs on every query call — like a candid query
 //!     HttpResponse::builder()
 //!         .with_body(b"{\"status\":\"ok\"}" as &[u8])
 //!         .build()
 //! }
 //! ```
 //!
-//! **Security note:** A malicious replica can return arbitrary data for
-//! skip-certified paths. Only use for data that is publicly verifiable or
-//! has no security value.
+//! **Handler execution:** Skip-mode routes run the handler on every query
+//! call, just like candid `query` calls. This makes them ideal for
+//! auth-gated API endpoints — combine with handler-level auth (JWT
+//! validation, `ic_cdk::caller()` checks) for fast (~200ms) authenticated
+//! queries without waiting for consensus (~2s update calls).
+//!
+//! **Security note:** Skip certification provides the same trust level as
+//! candid query calls — both trust the responding replica without
+//! cryptographic verification by the boundary node. If candid queries are
+//! acceptable for your application, skip certification is equally
+//! acceptable.
+//!
+//! ### Skip + Handler Auth Pattern
+//!
+//! ```rust,ignore
+//! #[route(certification = "skip")]
+//! pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
+//!     let caller = ic_cdk::caller();
+//!     if caller == Principal::anonymous() {
+//!         return HttpResponse::builder()
+//!             .with_status_code(StatusCode::UNAUTHORIZED)
+//!             .with_body(b"unauthorized" as &[u8])
+//!             .build();
+//!     }
+//!     // Return caller-specific data
+//!     HttpResponse::builder()
+//!         .with_body(format!("hello {caller}").into_bytes())
+//!         .build()
+//! }
+//! ```
+//!
+//! See the [`api-authentication`](https://github.com/kristoferlund/ic-asset-router/tree/main/examples/api-authentication)
+//! example for a complete demonstration of both patterns.
 //!
 //! ## Authenticated (Full Certification Preset)
 //!
@@ -191,6 +222,24 @@
 //! | Response-only | Low | ~200 bytes |
 //! | Full (authenticated) | Medium | ~300 bytes |
 //! | Full (custom) | Medium–High | ~300–500 bytes |
+//!
+//! ## Security Model: Certification vs Candid Calls
+//!
+//! IC canisters support two HTTP interfaces and two candid call types, each
+//! with different trust assumptions:
+//!
+//! | Mechanism | Consensus | Boundary node verifies? | Trust model |
+//! |-----------|-----------|------------------------|-------------|
+//! | Candid **update** call | Yes (2s) | N/A | Consensus — response reflects agreed-upon state |
+//! | Candid **query** call | No (200ms) | No | Trust the replica |
+//! | HTTP + **ResponseOnly/Full** cert | Yes (2s) | Yes | Consensus — boundary node verifies the certificate |
+//! | HTTP + **Skip** cert | No (200ms) | No | Trust the replica |
+//!
+//! **Key insight:** Skip certification and candid query calls have the same
+//! trust model. Both execute on a single replica without consensus, and
+//! neither response is cryptographically verified. If your application
+//! already uses candid queries (as most IC apps do), skip certification
+//! is equally acceptable for equivalent operations.
 //!
 //! ## Common Mistakes
 //!
@@ -381,7 +430,7 @@ pub fn http_request(
     }
 
     match root_route_node.resolve(&path, &method) {
-        RouteResult::Found(handler, params, _result_handler, _pattern) => match opts.certify {
+        RouteResult::Found(handler, params, _result_handler, pattern) => match opts.certify {
             false => {
                 debug_log!("Serving {} without certification", path);
                 let mut response =
@@ -425,6 +474,83 @@ pub fn http_request(
                 })
             }
             true => {
+                // Full certification mode (e.g. authenticated routes) binds the
+                // proof to specific request header values. A cached response
+                // certified for Alice's token will fail verification when served
+                // to Bob. Always upgrade Full-mode routes to http_request_update
+                // so each request gets a freshly certified response.
+                let route_config = root_route_node.get_route_config(&pattern);
+                let cert_mode = route_config.map(|rc| &rc.certification);
+
+                // Full certification mode binds the proof to specific request
+                // header values. Always upgrade to http_request_update so each
+                // caller gets a freshly certified response.
+                if matches!(cert_mode, Some(certification::CertificationMode::Full(_))) {
+                    debug_log!("upgrading (full certification mode: {})", path);
+                    return HttpResponse::builder().with_upgrade(true).build();
+                }
+
+                // Skip certification mode: run the handler on every query call,
+                // like a candid query call. The response is served with a skip
+                // certification proof (no response body verification). This
+                // allows auth checks and dynamic responses on the fast query
+                // path. The first call upgrades to update to register the skip
+                // entry in the certification tree; subsequent calls run inline.
+                if matches!(cert_mode, Some(certification::CertificationMode::Skip)) {
+                    // Check if a skip entry exists in the tree (registered
+                    // during a prior update call).
+                    let has_skip_entry =
+                        ASSET_ROUTER.with_borrow(|ar| ar.get_asset(&path).is_some());
+
+                    if !has_skip_entry {
+                        // First call — need to register the skip entry via update.
+                        debug_log!("upgrading (skip mode, no tree entry yet: {})", path);
+                        return HttpResponse::builder().with_upgrade(true).build();
+                    }
+
+                    // Run the handler directly on the query path.
+                    debug_log!("skip mode: running handler inline for {}", path);
+                    let mut response =
+                        root_route_node.execute_with_middleware(&path, handler, req, params);
+
+                    // Add skip certification proof from the shared tree.
+                    return HTTP_TREE.with(|tree| {
+                        let tree = tree.borrow();
+                        let cert = match data_certificate() {
+                            Some(c) => c,
+                            None => {
+                                return error_response(
+                                    500,
+                                    "Internal Server Error: no data certificate available",
+                                );
+                            }
+                        };
+
+                        let tree_path = HttpCertificationPath::exact(path.to_string());
+                        let tree_certification = HttpCertification::skip();
+                        let tree_entry =
+                            HttpCertificationTreeEntry::new(tree_path.clone(), tree_certification);
+
+                        let witness = match tree.witness(&tree_entry, &path) {
+                            Ok(w) => w,
+                            Err(_) => {
+                                return error_response(
+                                    500,
+                                    "Internal Server Error: failed to create skip certification witness",
+                                );
+                            }
+                        };
+
+                        add_v2_certificate_header(
+                            &cert,
+                            &mut response,
+                            &witness,
+                            &tree_path.to_expr_path(),
+                        );
+                        response
+                    });
+                }
+
                 // Check the unified AssetRouter to determine cache state.
                 // Three outcomes:
                 //   Missing  — no asset at this path; upgrade to generate.

@@ -63,12 +63,30 @@
 #[derive(Clone, Debug)]
 pub enum CertificationMode {
     /// No certification. The response is served without cryptographic
-    /// verification. This is the fastest mode — use it for public endpoints
-    /// where tampering risk is acceptable (health checks, `/ping`).
+    /// verification.
     ///
-    /// **Security note:** A malicious replica can return arbitrary data for
-    /// skip-certified paths. Only use this for data that is publicly
-    /// verifiable or has no security value.
+    /// **Handler execution:** Unlike ResponseOnly and Full modes, skip-mode
+    /// routes run the handler on every query call. This makes them behave
+    /// like candid `query` calls — fast (~200ms) and executed on a single
+    /// replica without consensus. This enables handler-level auth checks
+    /// (e.g. validating a JWT or checking `ic_cdk::caller()`) on every
+    /// request, which is useful for authenticated API endpoints where
+    /// per-call latency matters more than response certification.
+    ///
+    /// **Security model:** Skip certification provides the same trust level
+    /// as candid query calls — both trust the responding replica. The
+    /// response is not cryptographically verified by the boundary node in
+    /// either case. If candid queries are acceptable for your application,
+    /// skip certification is equally acceptable.
+    ///
+    /// **When to use:**
+    /// - Health checks, `/ping`, and other low-value endpoints
+    /// - Auth-gated API endpoints where you need fast query-path performance
+    ///   with per-call authentication (combine with handler-level auth)
+    ///
+    /// **When NOT to use:**
+    /// - Endpoints where you need the boundary node to cryptographically
+    ///   verify the response (use ResponseOnly or Full instead)
     Skip,
 
     /// Only the response is certified. Request details (headers, query
@@ -95,6 +113,10 @@ pub enum CertificationMode {
 
 impl CertificationMode {
     /// Create a skip-certification mode.
+    ///
+    /// Skip-mode routes run the handler on every query call (like candid
+    /// queries) and attach a skip certification witness. See
+    /// [`CertificationMode::Skip`] for the full security model.
     ///
     /// Equivalent to `CertificationMode::Skip`. Provided for symmetry
     /// with [`response_only()`](Self::response_only) and

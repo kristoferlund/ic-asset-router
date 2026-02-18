@@ -1,14 +1,21 @@
 //! API Authentication Example
 //!
-//! Demonstrates why authenticated endpoints need full certification.
+//! Demonstrates two patterns for authenticated endpoints:
 //!
 //! - `GET /` — public about page (response-only, default)
-//! - `GET /profile` — user profile (authenticated, full certification)
+//! - `GET /profile` — user profile (full certification, update call per request)
+//! - `GET /customers` — shared customer list (skip certification + handler auth)
 //!
-//! Without full certification on `/profile`, a malicious replica could serve
-//! Alice's cached profile to Bob. With `#[route(certification = "authenticated")]`,
-//! the Authorization header is included in the certification hash, making each
-//! user's response independently verifiable.
+//! **Pattern 1 — Full certification (`/profile`):** Each user gets an independently
+//! certified response. The `Authorization` header is included in the certification
+//! hash, so a malicious replica cannot serve Alice's profile to Bob. Trade-off:
+//! every request goes through an update call (~2s).
+//!
+//! **Pattern 2 — Skip + handler auth (`/customers`):** The handler runs on every
+//! query call (like a candid query), checks the `Authorization` header, and returns
+//! 401 if missing. The response uses skip certification — identical security model
+//! to IC candid query calls. Use this when you need auth checking on every request
+//! with fast query-path performance (~200ms).
 
 use ic_cdk::{init, post_upgrade, query, update};
 use ic_http_certification::{HttpRequest, HttpResponse};

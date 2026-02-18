@@ -246,7 +246,8 @@ Every HTTP response served by an IC canister can be cryptographically certified 
 |------|-------------|----------------|
 | **Response-only** (default) | Same URL always returns same content | Static pages, blog posts, docs |
 | **Skip** | Tampering has no security impact | Health checks, `/ping` |
-| **Authenticated** | Response depends on caller identity | User profiles, dashboards |
+| **Skip + handler auth** | Fast auth-gated API (query-path perf) | `/api/customers`, `/api/me` |
+| **Authenticated** | Response depends on caller identity, must be tamper-proof | User profiles, dashboards |
 | **Custom (Full)** | Response depends on specific headers/params | Content negotiation, pagination |
 
 **Start with the default** (response-only). It requires no configuration and is correct for 90% of routes.
@@ -267,14 +268,37 @@ pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
 ```rust
 #[route(certification = "skip")]
 pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
-    // No certification overhead — fastest mode
+    // Handler runs on every query call — like a candid query
     HttpResponse::builder()
         .with_body(b"{\"status\":\"ok\"}" as &[u8])
         .build()
 }
 ```
 
-> **Security note:** A malicious replica can return arbitrary data for skip-certified paths. Only use for data that is publicly verifiable or has no security value.
+**Handler execution:** Skip-mode routes run the handler on every query call, just like candid `query` calls. This makes them ideal for auth-gated API endpoints — combine with handler-level auth (JWT validation, `ic_cdk::caller()` checks) for fast (~200ms) authenticated queries without waiting for consensus (~2s update calls).
+
+> **Security note:** Skip certification provides the same trust level as candid query calls — both trust the responding replica without cryptographic verification by the boundary node. If candid queries are acceptable for your application, skip certification is equally acceptable.
+
+#### Skip + handler auth pattern
+
+```rust
+#[route(certification = "skip")]
+pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
+    let caller = ic_cdk::caller();
+    if caller == Principal::anonymous() {
+        return HttpResponse::builder()
+            .with_status_code(StatusCode::UNAUTHORIZED)
+            .with_body(b"unauthorized" as &[u8])
+            .build();
+    }
+    // Return caller-specific data
+    HttpResponse::builder()
+        .with_body(format!("hello {caller}").into_bytes())
+        .build()
+}
+```
+
+See the [`api-authentication`](examples/api-authentication/) example for a complete demonstration of both patterns.
 
 ### Authenticated (full certification preset)
 
@@ -320,6 +344,19 @@ certify_assets_with_mode(
 ```
 
 See the [`certification-modes`](examples/certification-modes/) and [`api-authentication`](examples/api-authentication/) examples for complete, deployable demonstrations.
+
+### Security model: certification vs candid calls
+
+IC canisters support two HTTP interfaces and two candid call types, each with different trust assumptions:
+
+| Mechanism | Consensus | Boundary node verifies? | Trust model |
+|-----------|-----------|------------------------|-------------|
+| Candid **update** call | Yes (~2s) | N/A | Consensus — response reflects agreed-upon state |
+| Candid **query** call | No (~200ms) | No | Trust the replica |
+| HTTP + **ResponseOnly/Full** cert | Yes (~2s) | Yes | Consensus — boundary node verifies the certificate |
+| HTTP + **Skip** cert | No (~200ms) | No | Trust the replica |
+
+**Key insight:** Skip certification and candid query calls have the same trust model. Both execute on a single replica without consensus, and neither response is cryptographically verified. If your application already uses candid queries (as most IC apps do), skip certification is equally acceptable for equivalent operations.
 
 ## Configuration
 
