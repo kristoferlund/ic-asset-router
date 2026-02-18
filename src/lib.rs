@@ -269,8 +269,8 @@ use std::{borrow::Cow, cell::RefCell, rc::Rc};
 use assets::get_asset_headers;
 use ic_cdk::api::{certified_data_set, data_certificate};
 use ic_http_certification::{
-    utils::add_v2_certificate_header, HttpCertification, HttpCertificationPath,
-    HttpCertificationTree, HttpCertificationTreeEntry, Method,
+    utils::add_v2_certificate_header, DefaultCelBuilder, HttpCertification, HttpCertificationPath,
+    HttpCertificationTree, HttpCertificationTreeEntry, Method, CERTIFICATE_EXPRESSION_HEADER_NAME,
 };
 use router::{RouteNode, RouteResult};
 
@@ -579,6 +579,13 @@ pub fn http_request(
                 let mut response =
                     root_route_node.execute_with_middleware(&path, handler, req, params);
 
+                // Add the CEL expression header so the boundary node knows
+                // this response uses skip certification.
+                response.add_header((
+                    CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+                    DefaultCelBuilder::skip_certification().to_string(),
+                ));
+
                 HTTP_TREE.with(|tree| {
                     let tree = tree.borrow();
 
@@ -641,6 +648,13 @@ pub fn http_request(
                     debug_log!("skip mode: running handler inline for {}", path);
                     let mut response =
                         root_route_node.execute_with_middleware(&path, handler, req, params);
+
+                    // Add the CEL expression header so the boundary node knows
+                    // this response uses skip certification.
+                    response.add_header((
+                        CERTIFICATE_EXPRESSION_HEADER_NAME.to_string(),
+                        DefaultCelBuilder::skip_certification().to_string(),
+                    ));
 
                     // Add skip certification proof from the shared tree.
                     return HTTP_TREE.with(|tree| {

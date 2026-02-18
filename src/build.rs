@@ -139,8 +139,20 @@ pub fn generate_routes_from(dir: &str) {
     let generated_file = Path::new(&out_dir).join("__route_tree.rs");
 
     // Tell Cargo to re-run the build script when any file in the routes
-    // directory changes.
+    // directory changes. We emit rerun-if-changed for the root and every
+    // subdirectory so that adding/removing files anywhere in the tree
+    // triggers a rebuild.
     println!("cargo:rerun-if-changed={dir}");
+    fn emit_rerun_if_changed(dir: &Path) {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            println!("cargo:rerun-if-changed={}", path.display());
+            if path.is_dir() {
+                emit_rerun_if_changed(&path);
+            }
+        }
+    }
+    emit_rerun_if_changed(routes_dir);
 
     let mut exports: Vec<MethodExport> = Vec::new();
     let mut middleware_exports: Vec<MiddlewareExport> = Vec::new();
