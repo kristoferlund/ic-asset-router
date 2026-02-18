@@ -24,7 +24,7 @@ The library works but has several issues that need fixing before production use.
 - **Library**: [kristoferlund/ic-asset-router](https://github.com/kristoferlund/ic-asset-router)
 - **Example project**: [kristoferlund/promptathon-showcase](https://github.com/kristoferlund/promptathon-showcase)
 
-## Evolution Roadmap — 6 Phases, 29 Work Items
+## Evolution Roadmap — 8 Phases, 48 Work Items
 
 ### Phase 1 — Fix Foundations *(breaking changes OK)*
 Make the library correct and production-ready.
@@ -103,6 +103,35 @@ Address bugs, design gaps, and maintenance issues discovered during Phase 5 impl
 | 6.9 | [Fix Fragile Template Paths](Phase%206/6.9%20—%20Fix%20Fragile%20Template%20Paths%20in%20Examples.md) | Low | Small |
 
 Implementation plan: [Phase 6 Plan](Phase%206/PLAN.md)
+
+### Phase 7 — Configurable Certification Modes
+Per-route and per-asset certification mode configuration with a proc-macro attribute.
+
+| # | Item | Priority | Effort |
+|---|------|----------|--------|
+| 7.1 | [Define Certification Configuration Types](Phase%207/7.1%20—%20Define%20Certification%20Configuration%20Types.md) | Critical | Medium |
+| 7.2 | [Build Asset Router](Phase%207/7.2%20—%20Build%20Asset%20Router.md) | Critical | Large |
+| 7.3 | [Refactor certify_assets for Certification Modes](Phase%207/7.3%20—%20Refactor%20certify_assets%20for%20Certification%20Modes.md) | High | Medium |
+| 7.4 | [Per-Route Certification Configuration](Phase%207/7.4%20—%20Per-Route%20Certification%20Configuration.md) | High | Large |
+| 7.5 | [Documentation and Examples for Certification Modes](Phase%207/7.5%20—%20Documentation%20and%20Examples%20for%20Certification%20Modes.md) | Medium | Medium |
+| 7.6 | [Integration Tests for Certification Modes](Phase%207/7.6%20—%20Integration%20Tests%20for%20Certification%20Modes.md) | High | Medium |
+| 7.7 | [RouteContext Ergonomic Improvements](Phase%207/7.7%20—%20RouteContext%20Ergonomic%20Improvements.md) | Medium | Small |
+
+Implementation plan: [Phase 7 Plan](Phase%207/PLAN.md)
+
+### Phase 8 — Code Quality & Robustness
+Structural refactoring, production safety fixes, and test coverage improvements identified by a code audit.
+
+| # | Item | Priority | Effort |
+|---|------|----------|--------|
+| 8.1 | [Decompose http_request Functions](Phase%208/8.1%20—%20Decompose%20http_request%20Functions.md) | Critical | Large |
+| 8.2 | [Eliminate Production Panics](Phase%208/8.2%20—%20Eliminate%20Production%20Panics.md) | High | Small |
+| 8.3 | [Deduplicate Router and Asset Router Internals](Phase%208/8.3%20—%20Deduplicate%20Router%20and%20Asset%20Router%20Internals.md) | High | Medium |
+| 8.4 | [Harden Build Script](Phase%208/8.4%20—%20Harden%20Build%20Script.md) | Medium | Medium |
+| 8.5 | [Route Trie Optimization](Phase%208/8.5%20—%20Route%20Trie%20Optimization.md) | Medium | Medium |
+| 8.6 | [Test Coverage and Edge Cases](Phase%208/8.6%20—%20Test%20Coverage%20and%20Edge%20Cases.md) | Medium | Medium |
+
+Implementation plan: [Phase 8 Plan](Phase%208/PLAN.md)
 
 ## Ecosystem Context
 
