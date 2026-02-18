@@ -503,17 +503,19 @@ mod tests {
     fn test_skip_certification_has_skip_proof() {
         let (_pic, client, base_url, _cid) = setup();
 
-        // First request triggers query→update flow for /skip_test.
+        // Skip-mode routes run the handler on every query call (no upgrade
+        // needed). The skip tree entry was registered at init via
+        // `register_skip_routes`, so the very first request works.
         let resp1 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
         assert_eq!(resp1.status().as_u16(), 200);
+        assert!(
+            has_certificate_header(&resp1),
+            "Skip mode response should have ic-certificate header with skip proof"
+        );
         let body1 = resp1.text().unwrap();
         assert_eq!(body1, "skip ok", "skip_test should return 'skip ok'");
 
-        // Second request: served from certified cache (Skip mode).
-        // Skip-mode responses HAVE an ic-certificate header containing a
-        // proof that this path intentionally skips certification. The
-        // boundary node verifies the skip proof and passes the response
-        // through without content verification.
+        // Second request also runs the handler inline — no caching.
         let resp2 = client.get(url_for(&base_url, "/skip_test")).send().unwrap();
         assert_eq!(resp2.status().as_u16(), 200);
         assert!(

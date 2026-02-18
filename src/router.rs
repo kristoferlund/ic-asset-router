@@ -234,6 +234,25 @@ impl RouteNode {
         self.route_configs.get(path)
     }
 
+    /// Return all route path patterns configured with
+    /// [`CertificationMode::Skip`](crate::CertificationMode::Skip).
+    ///
+    /// Used during `init`/`post_upgrade` to pre-register skip certification
+    /// tree entries so that skip-mode routes never need to upgrade to an
+    /// update call.
+    pub fn skip_certified_paths(&self) -> Vec<String> {
+        self.route_configs
+            .iter()
+            .filter(|(_, config)| {
+                matches!(
+                    config.certification,
+                    crate::certification::CertificationMode::Skip
+                )
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// Register a handler for the given path and HTTP method.
     ///
     /// Path segments starting with `:` are treated as dynamic parameters;

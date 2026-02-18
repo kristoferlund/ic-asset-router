@@ -12,12 +12,15 @@ mod route_tree {
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    // Demonstrate the strict() preset — the most restrictive configuration.
-    // Compare with SecurityHeaders::permissive() or SecurityHeaders::none().
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
-        security_headers: ic_asset_router::SecurityHeaders::strict(),
-        cache_control: ic_asset_router::CacheControl::default(),
-        ..ic_asset_router::AssetConfig::default()
+    route_tree::ROUTES.with(|routes| {
+        // Demonstrate the strict() preset — the most restrictive configuration.
+        // Compare with SecurityHeaders::permissive() or SecurityHeaders::none().
+        ic_asset_router::setup(routes)
+            .with_config(ic_asset_router::AssetConfig {
+                security_headers: ic_asset_router::SecurityHeaders::strict(),
+                ..ic_asset_router::AssetConfig::default()
+            })
+            .build();
     });
 }
 

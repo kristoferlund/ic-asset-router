@@ -13,9 +13,9 @@ mod route_tree {
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    // Permissive security headers (the default) — CORS is handled by our
-    // middleware, but permissive headers avoid blocking external API consumers.
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes).build();
+    });
 }
 
 #[init]

@@ -18,16 +18,19 @@ static ASSET_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
-        security_headers: ic_asset_router::SecurityHeaders::permissive(),
-        cache_control: ic_asset_router::CacheControl {
-            static_assets: "public, max-age=31536000, immutable".into(),
-            dynamic_assets: "public, no-cache, no-store".into(),
-        },
-        cache_config: ic_asset_router::CacheConfig::default(),
-        custom_headers: vec![],
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes)
+            .with_config(ic_asset_router::AssetConfig {
+                security_headers: ic_asset_router::SecurityHeaders::permissive(),
+                cache_control: ic_asset_router::CacheControl {
+                    static_assets: "public, max-age=31536000, immutable".into(),
+                    dynamic_assets: "public, no-cache, no-store".into(),
+                },
+                ..ic_asset_router::AssetConfig::default()
+            })
+            .with_assets(&ASSET_DIR)
+            .build();
     });
-    ic_asset_router::assets::certify_assets(&ASSET_DIR);
 }
 
 #[init]

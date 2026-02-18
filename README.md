@@ -71,7 +71,9 @@ mod route_tree {
 }
 
 fn setup() {
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes).build();
+    });
 }
 
 #[init]
@@ -328,19 +330,37 @@ pub fn get(_ctx: RouteContext<()>) -> HttpResponse<'static> {
 }
 ```
 
-### Programmatic configuration (for static assets)
+### Setup with static assets
+
+Configure the asset router and certify static assets in a single builder chain during `init`/`post_upgrade`:
 
 ```rust
-use ic_asset_router::{certify_assets, certify_assets_with_mode, CertificationMode};
+use include_dir::{include_dir, Dir};
 
-// Default: response-only
-certify_assets(&include_dir!("assets/static"));
+static ASSET_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
-// Skip for public files
-certify_assets_with_mode(
-    &include_dir!("assets/public"),
-    CertificationMode::skip(),
-);
+fn setup() {
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes)
+            .with_assets(&ASSET_DIR)
+            .build();
+    });
+}
+```
+
+For different certification modes per directory:
+
+```rust
+use ic_asset_router::CertificationMode;
+
+fn setup() {
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes)
+            .with_assets(&STATIC_DIR)                                   // response-only (default)
+            .with_assets_certified(&PUBLIC_DIR, CertificationMode::skip()) // skip
+            .build();
+    });
+}
 ```
 
 See the [`certification-modes`](examples/certification-modes/) and [`api-authentication`](examples/api-authentication/) examples for complete, deployable demonstrations.
@@ -363,12 +383,12 @@ IC canisters support two HTTP interfaces and two candid call types, each with di
 ### Security headers
 
 ```rust
-use ic_asset_router::{AssetConfig, SecurityHeaders};
-
-ic_asset_router::set_asset_config(AssetConfig {
-    security_headers: SecurityHeaders::strict(),
-    ..AssetConfig::default()
-});
+ic_asset_router::setup(routes)
+    .with_config(ic_asset_router::AssetConfig {
+        security_headers: ic_asset_router::SecurityHeaders::strict(),
+        ..ic_asset_router::AssetConfig::default()
+    })
+    .build();
 ```
 
 Individual fields can be overridden on any preset. See [`SecurityHeaders`](https://docs.rs/ic-asset-router/latest/ic_asset_router/config/struct.SecurityHeaders.html) for all available fields.
@@ -380,19 +400,21 @@ use std::collections::HashMap;
 use std::time::Duration;
 use ic_asset_router::{AssetConfig, CacheConfig, CacheControl};
 
-ic_asset_router::set_asset_config(AssetConfig {
-    cache_control: CacheControl {
-        static_assets: "public, max-age=31536000, immutable".into(),
-        dynamic_assets: "public, no-cache, no-store".into(),
-    },
-    cache_config: CacheConfig {
-        default_ttl: Some(Duration::from_secs(300)),
-        per_route_ttl: HashMap::from([
-            ("/api/status".to_string(), Duration::from_secs(30)),
-        ]),
-    },
-    ..AssetConfig::default()
-});
+ic_asset_router::setup(routes)
+    .with_config(AssetConfig {
+        cache_control: CacheControl {
+            static_assets: "public, max-age=31536000, immutable".into(),
+            dynamic_assets: "public, no-cache, no-store".into(),
+        },
+        cache_config: CacheConfig {
+            default_ttl: Some(Duration::from_secs(300)),
+            per_route_ttl: HashMap::from([
+                ("/api/status".to_string(), Duration::from_secs(30)),
+            ]),
+        },
+        ..AssetConfig::default()
+    })
+    .build();
 ```
 
 Programmatic invalidation:

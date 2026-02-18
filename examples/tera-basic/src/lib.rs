@@ -13,7 +13,9 @@ mod route_tree {
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes).build();
+    });
 }
 
 #[init]

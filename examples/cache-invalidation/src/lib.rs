@@ -15,16 +15,19 @@ mod route_tree {
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
-        security_headers: ic_asset_router::SecurityHeaders::permissive(),
-        cache_control: ic_asset_router::CacheControl::default(),
-        cache_config: ic_asset_router::CacheConfig {
-            // Default TTL: 5 minutes for all dynamic routes.
-            default_ttl: Some(Duration::from_secs(300)),
-            // Override: the /ttl route has a shorter 30-second TTL.
-            per_route_ttl: HashMap::from([("/ttl".to_string(), Duration::from_secs(30))]),
-        },
-        custom_headers: vec![],
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes)
+            .with_config(ic_asset_router::AssetConfig {
+                security_headers: ic_asset_router::SecurityHeaders::permissive(),
+                cache_config: ic_asset_router::CacheConfig {
+                    // Default TTL: 5 minutes for all dynamic routes.
+                    default_ttl: Some(Duration::from_secs(300)),
+                    // Override: the /ttl route has a shorter 30-second TTL.
+                    per_route_ttl: HashMap::from([("/ttl".to_string(), Duration::from_secs(30))]),
+                },
+                ..ic_asset_router::AssetConfig::default()
+            })
+            .build();
     });
 }
 

@@ -18,14 +18,21 @@ fn setup() {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
-        cache_config: ic_asset_router::CacheConfig {
-            default_ttl: None,
-            per_route_ttl: HashMap::from([("/ttl_test".to_string(), Duration::from_secs(5))]),
-        },
-        ..ic_asset_router::AssetConfig::default()
+    route_tree::ROUTES.with(|routes| {
+        ic_asset_router::setup(routes)
+            .with_config(ic_asset_router::AssetConfig {
+                cache_config: ic_asset_router::CacheConfig {
+                    default_ttl: None,
+                    per_route_ttl: HashMap::from([(
+                        "/ttl_test".to_string(),
+                        Duration::from_secs(5),
+                    )]),
+                },
+                ..ic_asset_router::AssetConfig::default()
+            })
+            .with_assets(&ASSET_DIR)
+            .build();
     });
-    ic_asset_router::certify_assets(&ASSET_DIR);
 }
 
 #[init]

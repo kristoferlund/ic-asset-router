@@ -73,7 +73,9 @@
 //! }
 //!
 //! fn setup() {
-//!     ic_asset_router::set_asset_config(ic_asset_router::AssetConfig::default());
+//!     route_tree::ROUTES.with(|routes| {
+//!         ic_asset_router::setup(routes).build();
+//!     });
 //! }
 //! ```
 //!
@@ -196,22 +198,20 @@
 //! }
 //! ```
 //!
-//! ## Programmatic Configuration
+//! ## Setup with Static Assets
 //!
-//! For static assets certified during `init`/`post_upgrade`, use
-//! [`certify_assets_with_mode`]:
+//! Configure and certify assets in a single builder chain during
+//! `init`/`post_upgrade`:
 //!
 //! ```rust,ignore
-//! use ic_asset_router::{certify_assets, certify_assets_with_mode, CertificationMode};
+//! use ic_asset_router::CertificationMode;
 //!
-//! // Default: response-only
-//! certify_assets(&include_dir!("assets/static"));
-//!
-//! // Skip for public files
-//! certify_assets_with_mode(
-//!     &include_dir!("assets/public"),
-//!     CertificationMode::skip(),
-//! );
+//! route_tree::ROUTES.with(|routes| {
+//!     ic_asset_router::setup(routes)
+//!         .with_assets(&STATIC_DIR)                                   // response-only (default)
+//!         .with_assets_certified(&PUBLIC_DIR, CertificationMode::skip()) // skip
+//!         .build();
+//! });
 //! ```
 //!
 //! ## Performance Comparison
@@ -347,8 +347,7 @@ pub mod route_config;
 pub mod router;
 
 pub use assets::{
-    certify_assets, certify_assets_with_mode, invalidate_all_dynamic, invalidate_path,
-    invalidate_prefix, last_certified_at,
+    delete_assets, invalidate_all_dynamic, invalidate_path, invalidate_prefix, last_certified_at,
 };
 pub use certification::{CertificationMode, FullConfig, FullConfigBuilder, ResponseOnlyConfig};
 pub use config::{AssetConfig, CacheConfig, CacheControl, SecurityHeaders};
@@ -367,13 +366,158 @@ thread_local! {
 }
 
 /// Set the global router configuration.
-///
-/// Call this during canister initialization (e.g. in `init` or `post_upgrade`)
-/// before certifying any assets.
-pub fn set_asset_config(config: AssetConfig) {
+fn set_asset_config(config: AssetConfig) {
     ROUTER_CONFIG.with(|c| {
         *c.borrow_mut() = config;
     });
+}
+
+/// Register skip-certification tree entries for all routes configured with
+/// [`CertificationMode::Skip`].
+fn register_skip_routes(root_route_node: &router::RouteNode) {
+    let skip_paths = root_route_node.skip_certified_paths();
+    if skip_paths.is_empty() {
+        return;
+    }
+
+    ASSET_ROUTER.with_borrow_mut(|asset_router| {
+        for path in &skip_paths {
+            let config = asset_router::AssetCertificationConfig {
+                mode: certification::CertificationMode::Skip,
+                content_type: Some("application/octet-stream".to_string()),
+                status_code: StatusCode::OK,
+                headers: vec![],
+                encodings: vec![],
+                fallback_for: None,
+                aliases: vec![],
+                certified_at: ic_cdk::api::time(),
+                ttl: None,
+                dynamic: false,
+            };
+
+            if let Err(_err) = asset_router.certify_asset(path, vec![], config) {
+                debug_log!("Failed to register skip entry for {}: {}", path, _err);
+            }
+        }
+
+        certified_data_set(&asset_router.root_hash());
+    });
+
+    debug_log!("registered {} skip certification entries", skip_paths.len());
+}
+
+// ---------------------------------------------------------------------------
+// Setup builder
+// ---------------------------------------------------------------------------
+
+/// Entry point for canister initialization. Returns a [`SetupBuilder`] that
+/// configures the asset router, certifies assets, and registers skip routes
+/// in a single fluent chain.
+///
+/// Call this during `init` and `post_upgrade`:
+///
+/// ```rust,ignore
+/// use include_dir::{include_dir, Dir};
+///
+/// mod route_tree {
+///     include!(concat!(env!("OUT_DIR"), "/__route_tree.rs"));
+/// }
+///
+/// static ASSET_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+///
+/// fn setup() {
+///     route_tree::ROUTES.with(|routes| {
+///         ic_asset_router::setup(routes)
+///             .with_assets(&ASSET_DIR)
+///             .build();
+///     });
+/// }
+/// ```
+pub fn setup(routes: &router::RouteNode) -> SetupBuilder<'_> {
+    SetupBuilder {
+        routes,
+        config: None,
+        asset_dirs: Vec::new(),
+        delete_paths: Vec::new(),
+    }
+}
+
+/// Builder for canister initialization. Created by [`setup()`].
+///
+/// Calling [`.build()`](SetupBuilder::build) executes the following steps
+/// in order:
+///
+/// 1. Sets the global [`AssetConfig`] (or uses the default).
+/// 2. Certifies each registered asset directory.
+/// 3. Deletes any paths registered via [`delete_assets`](SetupBuilder::delete_assets).
+/// 4. Registers skip-certification tree entries for all skip-mode routes.
+/// 5. Calls `certified_data_set` with the final root hash.
+pub struct SetupBuilder<'r> {
+    routes: &'r router::RouteNode,
+    config: Option<AssetConfig>,
+    asset_dirs: Vec<(
+        &'static include_dir::Dir<'static>,
+        certification::CertificationMode,
+    )>,
+    delete_paths: Vec<&'static str>,
+}
+
+impl<'r> SetupBuilder<'r> {
+    /// Override the default [`AssetConfig`].
+    ///
+    /// If not called, [`AssetConfig::default()`] is used.
+    pub fn with_config(mut self, config: AssetConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Certify all files in `dir` with the default certification mode
+    /// (response-only).
+    pub fn with_assets(mut self, dir: &'static include_dir::Dir<'static>) -> Self {
+        self.asset_dirs
+            .push((dir, certification::CertificationMode::response_only()));
+        self
+    }
+
+    /// Certify all files in `dir` with a specific [`CertificationMode`].
+    pub fn with_assets_certified(
+        mut self,
+        dir: &'static include_dir::Dir<'static>,
+        mode: certification::CertificationMode,
+    ) -> Self {
+        self.asset_dirs.push((dir, mode));
+        self
+    }
+
+    /// Delete previously certified assets at the given paths.
+    ///
+    /// Useful when static assets (e.g. a SPA's `index.html`) should be
+    /// replaced by dynamically generated responses with route-specific
+    /// content (e.g. SEO meta tags).
+    pub fn delete_assets(mut self, paths: Vec<&'static str>) -> Self {
+        self.delete_paths.extend(paths);
+        self
+    }
+
+    /// Execute the setup: apply config, certify assets, register skip
+    /// routes, and commit the certification tree root hash.
+    pub fn build(self) {
+        // 1. Set config.
+        set_asset_config(self.config.unwrap_or_default());
+
+        // 2. Certify asset directories.
+        for (dir, mode) in &self.asset_dirs {
+            assets::certify_assets_with_mode(dir, mode.clone());
+        }
+
+        // 3. Delete specified asset paths.
+        if !self.delete_paths.is_empty() {
+            assets::delete_assets(self.delete_paths);
+        }
+
+        // 4. Register skip routes.
+        register_skip_routes(self.routes);
+    }
 }
 
 /// Options controlling the behavior of [`http_request`].
@@ -491,24 +635,10 @@ pub fn http_request(
                 }
 
                 // Skip certification mode: run the handler on every query call,
-                // like a candid query call. The response is served with a skip
-                // certification proof (no response body verification). This
-                // allows auth checks and dynamic responses on the fast query
-                // path. The first call upgrades to update to register the skip
-                // entry in the certification tree; subsequent calls run inline.
+                // like a candid query call. The skip tree entry was registered
+                // at init time by `register_skip_routes`, so we just run the
+                // handler and attach the skip certification witness.
                 if matches!(cert_mode, Some(certification::CertificationMode::Skip)) {
-                    // Check if a skip entry exists in the tree (registered
-                    // during a prior update call).
-                    let has_skip_entry =
-                        ASSET_ROUTER.with_borrow(|ar| ar.get_asset(&path).is_some());
-
-                    if !has_skip_entry {
-                        // First call — need to register the skip entry via update.
-                        debug_log!("upgrading (skip mode, no tree entry yet: {})", path);
-                        return HttpResponse::builder().with_upgrade(true).build();
-                    }
-
-                    // Run the handler directly on the query path.
                     debug_log!("skip mode: running handler inline for {}", path);
                     let mut response =
                         root_route_node.execute_with_middleware(&path, handler, req, params);
@@ -875,6 +1005,15 @@ pub fn http_request_update(req: HttpRequest, root_route_node: &RouteNode) -> Htt
                 .map(|rc| rc.certification.clone())
                 .unwrap_or_else(certification::CertificationMode::response_only);
             let route_ttl = route_config.and_then(|rc| rc.ttl);
+
+            // Skip-mode routes are handled entirely on the query path.
+            // They should never reach http_request_update. If they do
+            // (e.g. due to a stale upgrade response), just run the handler
+            // and return without re-certifying.
+            if matches!(&cert_mode, certification::CertificationMode::Skip) {
+                debug_log!("skip mode in update path (unexpected): {}", path);
+                return root_route_node.execute_with_middleware(&path, handler, req, params);
+            }
 
             // If a HandlerResultFn is registered, call it first to check for
             // NotModified. This avoids running the full middleware + certification
