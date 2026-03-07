@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Migrated all examples from `dfx` to `icp-cli`: replaced `dfx.json` with `icp.yaml` in all ten example canisters.
+- Updated all example READMEs to use `icp network start -d`, `icp deploy`, and `icp canister call` instead of the equivalent `dfx` commands.
+- Added READMEs to `askama-basic`, `certification-modes`, and `tera-basic` examples.
+- Added `.icp` to `.gitignore`.
+- Removed unused `dfx.json` from `tests/e2e/test_canister` (the e2e build uses `cargo build` directly).
+
 ## [0.1.1] — 2026-02-19
 
 ### Changed
