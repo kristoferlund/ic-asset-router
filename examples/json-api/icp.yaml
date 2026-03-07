@@ -1,0 +1,7 @@
+canisters:
+  - name: json-api
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: json-api
+        candid: json_api.did

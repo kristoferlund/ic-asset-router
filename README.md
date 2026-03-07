@@ -571,7 +571,7 @@ Programmatic invalidation:
 
 ## Examples
 
-Each example is a complete, deployable ICP canister. Clone the repo and `dfx deploy` from any example directory.
+Each example is a complete, deployable ICP canister. Clone the repo and `icp deploy` from any example directory.
 
 | Example | Description |
 |---------|-------------|

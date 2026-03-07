@@ -16,7 +16,7 @@ e2e tests use PocketIC and require building a wasm test canister. Ask before run
 cd tests/e2e && cargo test
 ```
 
-Example canisters are in `examples/`. Each has its own Cargo.toml with a path dependency on the library. They build with `dfx build` and require a running local replica.
+Example canisters are in `examples/`. Each has its own Cargo.toml with a path dependency on the library. They build with `icp deploy` and require a running local replica (`icp network start -d`).
 
 ## Git rules
 

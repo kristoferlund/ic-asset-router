@@ -1,0 +1,10 @@
+canisters:
+  - name: server
+    build:
+      steps:
+        - type: script
+          commands:
+            - pnpm run build
+            - cargo build --manifest-path server/Cargo.toml --target wasm32-unknown-unknown --release
+            - cp server/target/wasm32-unknown-unknown/release/react_app_server.wasm "$ICP_WASM_OUTPUT_PATH"
+    candid: server/server.did
