@@ -67,7 +67,7 @@ fn http_request_update(req: HttpRequest) -> HttpResponse<'static> {
 
 /// Invalidate a single cached dynamic asset by path.
 ///
-/// Example: `dfx canister call cache_invalidation invalidate '("/")'`
+/// Example: `icp canister call cache-invalidation invalidate '("/")'`
 #[update]
 fn invalidate(path: String) {
     ic_asset_router::invalidate_path(&path);
@@ -75,7 +75,7 @@ fn invalidate(path: String) {
 
 /// Invalidate all cached dynamic assets.
 ///
-/// Example: `dfx canister call cache_invalidation invalidate_all`
+/// Example: `icp canister call cache-invalidation invalidate_all`
 #[update]
 fn invalidate_all() {
     ic_asset_router::invalidate_all_dynamic();

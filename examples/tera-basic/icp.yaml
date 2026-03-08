@@ -1,0 +1,7 @@
+canisters:
+  - name: tera-basic
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: tera-basic
+        candid: tera_basic.did

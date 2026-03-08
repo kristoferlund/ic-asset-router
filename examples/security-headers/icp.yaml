@@ -1,0 +1,7 @@
+canisters:
+  - name: security-headers
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: security-headers
+        candid: security_headers.did

@@ -1,0 +1,7 @@
+canisters:
+  - name: htmx-app
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: htmx-app
+        candid: htmx_app.did

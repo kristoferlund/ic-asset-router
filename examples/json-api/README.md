@@ -40,18 +40,27 @@ build.rs                  Route tree generation
 ## Run
 
 ```
-dfx start --background
-dfx deploy
+icp network start -d
+icp deploy
 ```
 
 Test with curl:
 
-```
+```sh
+# pre-requisite - set the canister id
+CANISTER_ID=$(icp canister status json-api --id-only)
+
 # List items
-curl http://localhost:4943/?canisterId=<id>
+curl http://$CANISTER_ID.localhost:8000/
 
 # Create item
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"name":"New item"}' \
-  http://localhost:4943/items?canisterId=<id>
+  http://$CANISTER_ID.localhost:8000/items
+```
+
+Stop the network when you're done:
+
+```
+icp network stop
 ```

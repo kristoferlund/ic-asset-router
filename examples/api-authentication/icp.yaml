@@ -1,0 +1,7 @@
+canisters:
+  - name: api-authentication
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: api-authentication
+        candid: api_authentication.did

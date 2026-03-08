@@ -1,0 +1,7 @@
+canisters:
+  - name: certification-modes
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: certification-modes
+        candid: certification_modes.did

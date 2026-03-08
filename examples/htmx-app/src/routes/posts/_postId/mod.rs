@@ -6,5 +6,5 @@ pub struct Params {
     pub post_id: String,
 }
 
-pub mod comments;
 pub mod index;
+pub mod comments;

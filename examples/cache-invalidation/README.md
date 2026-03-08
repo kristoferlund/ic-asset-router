@@ -27,10 +27,10 @@ version until either:
 
 ```
 # Invalidate a single path
-dfx canister call cache_invalidation invalidate '("/")'
+icp canister call cache-invalidation invalidate '("/")'
 
 # Invalidate all dynamic assets
-dfx canister call cache_invalidation invalidate_all
+icp canister call cache-invalidation invalidate_all
 ```
 
 ## Configuration
@@ -52,6 +52,12 @@ ic_asset_router::set_asset_config(ic_asset_router::AssetConfig {
 ## Run
 
 ```
-dfx start --background
-dfx deploy
+icp network start -d
+icp deploy
+```
+
+Stop the network when you're done:
+
+```
+icp network stop
 ```

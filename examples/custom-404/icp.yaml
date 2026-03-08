@@ -1,0 +1,7 @@
+canisters:
+  - name: custom-404
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: custom-404
+        candid: custom_404.did

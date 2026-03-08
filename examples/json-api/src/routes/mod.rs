@@ -1,3 +1,3 @@
 pub mod index;
-pub mod items;
 pub mod middleware;
+pub mod items;

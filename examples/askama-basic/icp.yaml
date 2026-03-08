@@ -1,0 +1,7 @@
+canisters:
+  - name: askama-basic
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: askama-basic
+        candid: askama_basic.did

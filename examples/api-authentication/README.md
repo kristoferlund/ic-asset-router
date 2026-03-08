@@ -57,25 +57,34 @@ build.rs                  Route tree generation
 ## Run
 
 ```
-dfx start --background
-dfx deploy
+icp network start -d
+icp deploy
 ```
 
 Test with curl:
 
 ```sh
+# pre-requisite - set the canister id
+CANISTER_ID=$(icp canister status api-authentication --id-only)
+
 # Public page
-curl http://<canister-id>.localhost:4943/
+curl http://$CANISTER_ID.localhost:8000/
 
 # Full certification — each user gets a separate update call (~2s each)
-curl -H 'Authorization: Bearer alice-token' http://<canister-id>.localhost:4943/profile
-curl -H 'Authorization: Bearer bob-token' http://<canister-id>.localhost:4943/profile
+curl -H 'Authorization: Bearer alice-token' http://$CANISTER_ID.localhost:8000/profile
+curl -H 'Authorization: Bearer bob-token' http://$CANISTER_ID.localhost:8000/profile
 
 # Skip + handler auth — fast query call, auth checked every time
-curl -H 'Authorization: Bearer alice-token' http://<canister-id>.localhost:4943/customers
-curl -H 'Authorization: Bearer bob-token' http://<canister-id>.localhost:4943/customers
+curl -H 'Authorization: Bearer alice-token' http://$CANISTER_ID.localhost:8000/customers
+curl -H 'Authorization: Bearer bob-token' http://$CANISTER_ID.localhost:8000/customers
 
 # No auth — both endpoints return 401
-curl http://<canister-id>.localhost:4943/customers
-curl http://<canister-id>.localhost:4943/profile
+curl http://$CANISTER_ID.localhost:8000/customers
+curl http://$CANISTER_ID.localhost:8000/profile
+```
+
+Stop the network when you're done:
+
+```
+icp network stop
 ```

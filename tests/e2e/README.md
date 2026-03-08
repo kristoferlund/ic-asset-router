@@ -41,7 +41,6 @@ tests/e2e/
   test_canister/        # The canister deployed into PocketIC
     Cargo.toml
     build.rs
-    dfx.json
     test_canister.did
     src/
       lib.rs            # Canister entry point

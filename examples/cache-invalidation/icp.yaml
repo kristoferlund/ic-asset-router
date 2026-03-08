@@ -1,0 +1,7 @@
+canisters:
+  - name: cache-invalidation
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: cache-invalidation
+        candid: cache_invalidation.did

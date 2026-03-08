@@ -33,8 +33,14 @@ different header sets.
 ## Run
 
 ```
-dfx start --background
-dfx deploy
+icp network start -d
+icp deploy
 ```
 
-Open the URL printed by `dfx deploy` in a browser.
+Open the URL printed by `icp deploy` in a browser.
+
+Stop the network when you're done:
+
+```
+icp network stop
+```

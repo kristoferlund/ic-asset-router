@@ -37,8 +37,14 @@ pub fn get(ctx: RouteContext<()>) -> HttpResponse<'static> {
 ## Run
 
 ```
-dfx start --background
-dfx deploy
+icp network start -d
+icp deploy
 ```
 
 Visit any non-existent path (e.g. `/nope`) to see the custom 404 page.
+
+Stop the network when you're done:
+
+```
+icp network stop
+```
